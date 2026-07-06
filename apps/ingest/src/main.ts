@@ -1,6 +1,11 @@
 // Ingest service: OTLP receiver -> adapt -> redact -> enrich -> produce. See docs/ARCHITECTURE.md.
-import { createLogger, handleOpsRequest, type HealthState } from "@heliograph/observability";
+import {
+  createLogger,
+  handleOpsRequest,
+  type HealthState,
+} from "@heliograph/observability";
 import { AdapterRegistry, ClaudeCodeAdapter } from "@heliograph/adapters";
+
 import { Enricher, createIdentityHasher } from "@heliograph/enrichment";
 import { makeQueueProvider } from "@heliograph/queue";
 import { kafkaEnv, identityPepper, queueProviderName } from "@heliograph/config";

@@ -37,9 +37,8 @@ export class MetricsIngestPipeline {
 
     for (const group of decoded.groups) {
       const adapter = this.deps.registry.resolve(group.scope);
-      const rc = adapter.buildResourceContext(group.resource, ctx);
       for (const point of group.points) {
-        for (const m of adapter.toMetrics(point, rc)) {
+        for (const m of adapter.toMetrics(point, group.resource, ctx)) {
           metrics.push(this.deps.enricher.enrichMetric(m));
         }
       }

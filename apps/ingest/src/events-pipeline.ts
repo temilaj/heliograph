@@ -30,9 +30,8 @@ export class EventsIngestPipeline {
     for (const group of decoded.groups) {
       const adapter = this.deps.registry.resolve(group.scope);
       if (!adapter.toEvents) continue;
-      const rc = adapter.buildResourceContext(group.resource, ctx);
       for (const record of group.records) {
-        for (const e of adapter.toEvents(record, rc)) {
+        for (const e of adapter.toEvents(record, group.resource, ctx)) {
           // Redaction seam: until the redaction layer is wired, drop raw content.
           delete e.stagedContent;
           this.deps.enricher.enrichEvent(e);

@@ -1,7 +1,12 @@
 // Processor service: consume canonical.metrics + canonical.events -> storage,
 // with a DLQ for poison messages. Providers are config-selected. See docs/ARCHITECTURE.md.
-import { createLogger, handleOpsRequest, type HealthState } from "@heliograph/observability";
+import {
+  createLogger,
+  handleOpsRequest,
+  type HealthState,
+} from "@heliograph/observability";
 import { makeQueueProvider } from "@heliograph/queue";
+
 import { makeStorageProvider } from "@heliograph/storage";
 import { kafkaEnv, clickhouseEnv, queueProviderName, storeProviderName } from "@heliograph/config";
 import { handleEventBatch, handleMetricBatch } from "./consume.ts";
