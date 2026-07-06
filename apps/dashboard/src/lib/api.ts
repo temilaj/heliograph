@@ -11,6 +11,8 @@ import type {
   AgentDetail,
   TeamRow,
   TeamDetail,
+  CapabilitiesSummary,
+  PluginDetail,
 } from "@heliograph/storage";
 
 async function get<T>(path: string): Promise<T> {
@@ -84,6 +86,23 @@ export function fetchTeamDetail(
   team: string,
 ): Promise<TeamDetail> {
   return get<TeamDetail>(`/v1/teams/${encodeURIComponent(team)}?${range(org, from, to)}`);
+}
+
+export function fetchCapabilities(
+  org: string,
+  from: string,
+  to: string,
+): Promise<CapabilitiesSummary> {
+  return get<CapabilitiesSummary>(`/v1/capabilities?${range(org, from, to)}`);
+}
+
+export function fetchPluginDetail(
+  org: string,
+  from: string,
+  to: string,
+  name: string,
+): Promise<PluginDetail> {
+  return get<PluginDetail>(`/v1/plugins/${encodeURIComponent(name)}?${range(org, from, to)}`);
 }
 
 export function fetchAgentDetail(

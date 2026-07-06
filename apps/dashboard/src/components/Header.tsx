@@ -3,9 +3,10 @@ import { NavLink, useLocation } from "react-router-dom";
 
 const LINKS = [
   { to: "/", label: "Overview", end: true },
-  { to: "/people", label: "People", end: false },
   { to: "/models", label: "Models & Tools", end: false },
+  { to: "/capabilities", label: "Capabilities", end: false },
   { to: "/teams", label: "Teams", end: false },
+  { to: "/people", label: "People", end: false },
 ];
 
 // heliograph = "sun writing" — a small sun mark in the accent hue.

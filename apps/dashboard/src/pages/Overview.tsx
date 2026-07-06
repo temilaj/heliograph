@@ -3,7 +3,7 @@
 // the URL; a change refetches while the previous render holds at reduced
 // opacity. Drill-down links preserve the query string via useLocation().search.
 import { useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useFilters } from "../lib/filters.tsx";
 import { fetchSummary, fetchCostTimeseries } from "../lib/api.ts";
 import type { OrgSummary, CostTimeseriesRow } from "@heliograph/storage";
@@ -148,6 +148,18 @@ export function Overview() {
   // --- Capabilities ---
   const countRows = (items: { name: string; count: number }[]): BarRow[] =>
     items.map((r) => ({ key: r.name, label: r.name, value: r.count, valueText: int(r.count) }));
+  const pluginRows: BarRow[] = s.plugins.map((r) => ({
+    key: r.name,
+    label: r.name,
+    value: r.count,
+    valueText: int(r.count),
+    to: `/capabilities/plugins/${enc(r.name)}`,
+  }));
+  const viewAll = (
+    <Link className="card-sub" to={{ pathname: "/capabilities", search }}>
+      View all ›
+    </Link>
+  );
   const sessionStarts: BarRow[] = s.sessionsByStart.map((r) => ({
     key: r.startType,
     label: r.startType,
@@ -220,16 +232,16 @@ export function Overview() {
       <Section title="Capabilities">
         <Grid cols={3}>
           <Card>
-            <CardHeader title="Skills" />
+            <CardHeader title="Skills" action={viewAll} />
             <BarList rows={countRows(s.skills)} search={search} />
           </Card>
           <Card>
-            <CardHeader title="MCP servers" />
+            <CardHeader title="MCP servers" action={viewAll} />
             <BarList rows={countRows(s.mcpServers)} search={search} />
           </Card>
           <Card>
-            <CardHeader title="Plugins" />
-            <BarList rows={countRows(s.plugins)} search={search} />
+            <CardHeader title="Plugins" action={viewAll} />
+            <BarList rows={pluginRows} search={search} />
           </Card>
           <Card>
             <CardHeader title="Session starts" />

@@ -87,6 +87,18 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       else dims[k] = v;
     }
 
+    // MCP tools arrive as `mcp__<server>__<tool>`; split so servers are queryable
+    // (tool part may itself contain "__"). tool_name stays unchanged.
+    const toolName = dims["tool_name"];
+    if (toolName?.startsWith("mcp__")) {
+      const rest = toolName.slice(5);
+      const sep = rest.indexOf("__");
+      if (sep > 0 && sep + 2 < rest.length) {
+        dims["mcp_server"] = rest.slice(0, sep);
+        dims["mcp_tool"] = rest.slice(sep + 2);
+      }
+    }
+
     const eventType = toEventType(record.eventName);
     // Preserve the raw name of unrecognized events so we can extend the taxonomy.
     if (eventType === "unknown" && record.eventName) dims["event.name"] = record.eventName;

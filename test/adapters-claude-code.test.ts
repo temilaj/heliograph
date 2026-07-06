@@ -68,3 +68,45 @@ describe("ClaudeCodeAdapter", () => {
     expect(rc.identity.emailHash).toBe(hash("x@y.com"));
   });
 });
+
+describe("ClaudeCodeAdapter MCP tool-name split", () => {
+  const adapter = new ClaudeCodeAdapter();
+  const resource = { attributes: { "service.name": "claude-code" } } as never;
+
+  // Build one tool_result event with the given tool_name and return its dims.
+  function dimsFor(toolName: string) {
+    const record = {
+      eventName: "claude_code.tool_result",
+      timestampNs: 0n,
+      attributes: { tool_name: toolName, success: "true" },
+    };
+    return adapter.toEvents!(record as never, resource, ctx)[0]!.dims;
+  }
+
+  test("splits mcp__<server>__<tool> into mcp_server / mcp_tool; tool_name unchanged", () => {
+    const dims = dimsFor("mcp__github__search_issues");
+    expect(dims["mcp_server"]).toBe("github");
+    expect(dims["mcp_tool"]).toBe("search_issues");
+    expect(dims["tool_name"]).toBe("mcp__github__search_issues");
+  });
+
+  test("plain tool names get no mcp dims", () => {
+    const dims = dimsFor("Bash");
+    expect(dims["mcp_server"]).toBeUndefined();
+    expect(dims["mcp_tool"]).toBeUndefined();
+    expect(dims["tool_name"]).toBe("Bash");
+  });
+
+  test("only the first `__` splits server from tool (tool keeps the rest)", () => {
+    const dims = dimsFor("mcp__a__b__c");
+    expect(dims["mcp_server"]).toBe("a");
+    expect(dims["mcp_tool"]).toBe("b__c");
+  });
+
+  test("degenerate mcp__x (no tool separator) gets no mcp dims", () => {
+    const dims = dimsFor("mcp__x");
+    expect(dims["mcp_server"]).toBeUndefined();
+    expect(dims["mcp_tool"]).toBeUndefined();
+    expect(dims["tool_name"]).toBe("mcp__x");
+  });
+});
