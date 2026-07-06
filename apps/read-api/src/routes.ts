@@ -8,6 +8,11 @@ export function orgFrom(req: Request): string | null {
   return req.headers.get("x-org-id") || url.searchParams.get("org");
 }
 
+/** RBAC seam for identity resolution: on unless opted out via header. */
+export function identityResolutionEnabled(req: Request): boolean {
+  return req.headers.get("x-resolve-identity") !== "false";
+}
+
 export function dateRange(req: Request, org: string): DateRange {
   const url = new URL(req.url);
   return {
