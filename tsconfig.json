@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "types": ["bun"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@heliograph/domain": ["packages/domain/src/index.ts"],
+      "@heliograph/otlp": ["packages/otlp/src/index.ts"],
+      "@heliograph/adapters": ["packages/adapters/src/index.ts"],
+      "@heliograph/redaction": ["packages/redaction/src/index.ts"],
+      "@heliograph/enrichment": ["packages/enrichment/src/index.ts"],
+      "@heliograph/queue": ["packages/queue/src/index.ts"],
+      "@heliograph/storage": ["packages/storage/src/index.ts"],
+      "@heliograph/config": ["packages/config/src/index.ts"],
+      "@heliograph/observability": ["packages/observability/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
