@@ -6,6 +6,8 @@
   "main": "src/main.ts",
   "dependencies": {
     "@heliograph/domain": "workspace:*",
-    "@heliograph/observability": "workspace:*"
+    "@heliograph/observability": "workspace:*",
+    "@heliograph/storage": "workspace:*",
+    "@heliograph/config": "workspace:*"
   }
 }
