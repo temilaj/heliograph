@@ -6,6 +6,11 @@
   "main": "src/main.ts",
   "dependencies": {
     "@heliograph/domain": "workspace:*",
-    "@heliograph/observability": "workspace:*"
+    "@heliograph/observability": "workspace:*",
+    "@heliograph/otlp": "workspace:*",
+    "@heliograph/adapters": "workspace:*",
+    "@heliograph/enrichment": "workspace:*",
+    "@heliograph/queue": "workspace:*",
+    "@heliograph/config": "workspace:*"
   }
 }

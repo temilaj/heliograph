@@ -3,6 +3,9 @@
   "workspaces": {
     "": {
       "name": "heliograph",
+      "dependencies": {
+        "kafkajs": "^2.2.4",
+      },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.6.0",
@@ -12,16 +15,24 @@
       "name": "@heliograph/ingest",
       "version": "0.0.1",
       "dependencies": {
+        "@heliograph/adapters": "workspace:*",
+        "@heliograph/config": "workspace:*",
         "@heliograph/domain": "workspace:*",
+        "@heliograph/enrichment": "workspace:*",
         "@heliograph/observability": "workspace:*",
+        "@heliograph/otlp": "workspace:*",
+        "@heliograph/queue": "workspace:*",
       },
     },
     "apps/processor": {
       "name": "@heliograph/processor",
       "version": "0.0.1",
       "dependencies": {
+        "@heliograph/config": "workspace:*",
         "@heliograph/domain": "workspace:*",
         "@heliograph/observability": "workspace:*",
+        "@heliograph/queue": "workspace:*",
+        "@heliograph/storage": "workspace:*",
       },
     },
     "apps/read-api": {
@@ -32,31 +43,89 @@
         "@heliograph/observability": "workspace:*",
       },
     },
+    "packages/adapters": {
+      "name": "@heliograph/adapters",
+      "version": "0.0.1",
+      "dependencies": {
+        "@heliograph/domain": "workspace:*",
+        "@heliograph/otlp": "workspace:*",
+      },
+    },
+    "packages/config": {
+      "name": "@heliograph/config",
+      "version": "0.0.1",
+    },
     "packages/domain": {
       "name": "@heliograph/domain",
       "version": "0.0.1",
+    },
+    "packages/enrichment": {
+      "name": "@heliograph/enrichment",
+      "version": "0.0.1",
+      "dependencies": {
+        "@heliograph/domain": "workspace:*",
+      },
     },
     "packages/observability": {
       "name": "@heliograph/observability",
       "version": "0.0.1",
     },
+    "packages/otlp": {
+      "name": "@heliograph/otlp",
+      "version": "0.0.1",
+    },
+    "packages/queue": {
+      "name": "@heliograph/queue",
+      "version": "0.0.1",
+      "dependencies": {
+        "@heliograph/domain": "workspace:*",
+        "kafkajs": "^2.2.4",
+      },
+    },
+    "packages/storage": {
+      "name": "@heliograph/storage",
+      "version": "0.0.1",
+      "dependencies": {
+        "@heliograph/domain": "workspace:*",
+      },
+    },
+    "tools/loadgen": {
+      "name": "@heliograph/loadgen",
+      "version": "0.0.1",
+    },
   },
   "packages": {
+    "@heliograph/adapters": ["@heliograph/adapters@workspace:packages/adapters"],
+
+    "@heliograph/config": ["@heliograph/config@workspace:packages/config"],
+
     "@heliograph/domain": ["@heliograph/domain@workspace:packages/domain"],
+
+    "@heliograph/enrichment": ["@heliograph/enrichment@workspace:packages/enrichment"],
 
     "@heliograph/ingest": ["@heliograph/ingest@workspace:apps/ingest"],
 
+    "@heliograph/loadgen": ["@heliograph/loadgen@workspace:tools/loadgen"],
+
     "@heliograph/observability": ["@heliograph/observability@workspace:packages/observability"],
+
+    "@heliograph/otlp": ["@heliograph/otlp@workspace:packages/otlp"],
 
     "@heliograph/processor": ["@heliograph/processor@workspace:apps/processor"],
 
+    "@heliograph/queue": ["@heliograph/queue@workspace:packages/queue"],
+
     "@heliograph/read-api": ["@heliograph/read-api@workspace:apps/read-api"],
+
+    "@heliograph/storage": ["@heliograph/storage@workspace:packages/storage"],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@types/node": ["@types/node@26.1.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw=="],
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "kafkajs": ["kafkajs@2.2.4", "", {}, "sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
