@@ -37,3 +37,23 @@ export interface DecodedMetricGroup {
 export interface DecodedMetrics {
   groups: DecodedMetricGroup[];
 }
+
+/** A flattened OTLP log record (Claude Code emits events on the logs signal). */
+export interface OtlpLogRecord {
+  /** Event name from `event.name`/`name` attribute, e.g. "claude_code.user_prompt". */
+  eventName?: string;
+  timestampNs: bigint;
+  severityNumber?: number;
+  body?: string;
+  attributes: Record<string, string>;
+}
+
+export interface DecodedLogGroup {
+  resource: OtlpResource;
+  scope: ResourceScope;
+  records: OtlpLogRecord[];
+}
+
+export interface DecodedLogs {
+  groups: DecodedLogGroup[];
+}

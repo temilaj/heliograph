@@ -4,24 +4,12 @@ import type {
   DecodedMetrics,
   DecodedMetricGroup,
   OtlpMetricPoint,
-  OtlpResource,
   ResourceScope,
 } from "./types.ts";
+import { decodeAttributes, decodeResource, toBigIntNs, type KeyValue } from "./anyvalue.ts";
 
 // --- Minimal structural typings of the OTLP/JSON payload -------------------
 
-interface AnyValue {
-  stringValue?: string;
-  boolValue?: boolean;
-  intValue?: string | number;
-  doubleValue?: number;
-  arrayValue?: { values?: AnyValue[] };
-  kvlistValue?: { values?: KeyValue[] };
-}
-interface KeyValue {
-  key: string;
-  value?: AnyValue;
-}
 interface NumberDataPoint {
   attributes?: KeyValue[];
   timeUnixNano?: string | number;
@@ -112,46 +100,4 @@ function numberValue(dp: NumberDataPoint): number {
   if (typeof dp.asDouble === "number") return dp.asDouble;
   if (dp.asInt !== undefined) return Number(dp.asInt);
   return 0;
-}
-
-function toBigIntNs(v: string | number | undefined): bigint {
-  if (v === undefined) return 0n;
-  try {
-    return BigInt(v);
-  } catch {
-    return 0n;
-  }
-}
-
-function decodeResource(attrs: KeyValue[] | undefined): OtlpResource {
-  return { attributes: decodeAttributes(attrs) };
-}
-
-/** Flatten OTLP attributes to a string map (scalars stringified). */
-function decodeAttributes(attrs: KeyValue[] | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const kv of attrs ?? []) {
-    if (!kv.key || kv.value === undefined) continue;
-    const s = anyValueToString(kv.value);
-    if (s !== undefined) out[kv.key] = s;
-  }
-  return out;
-}
-
-function anyValueToString(v: AnyValue): string | undefined {
-  if (v.stringValue !== undefined) return v.stringValue;
-  if (v.boolValue !== undefined) return String(v.boolValue);
-  if (v.intValue !== undefined) return String(v.intValue);
-  if (v.doubleValue !== undefined) return String(v.doubleValue);
-  if (v.arrayValue?.values) {
-    return JSON.stringify(v.arrayValue.values.map(anyValueToString));
-  }
-  if (v.kvlistValue?.values) {
-    const obj: Record<string, string | undefined> = {};
-    for (const kv of v.kvlistValue.values) {
-      if (kv.key && kv.value) obj[kv.key] = anyValueToString(kv.value);
-    }
-    return JSON.stringify(obj);
-  }
-  return undefined;
 }
