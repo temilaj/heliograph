@@ -2,30 +2,32 @@
 import { createLogger, handleOpsRequest, type HealthState } from "@heliograph/observability";
 import { AdapterRegistry, ClaudeCodeAdapter } from "@heliograph/adapters";
 import { Enricher, createIdentityHasher } from "@heliograph/enrichment";
-import { KafkaPublisher, ensureTopics } from "@heliograph/queue";
-import { kafkaEnv, identityPepper } from "@heliograph/config";
+import { makeQueueProvider } from "@heliograph/queue";
+import { kafkaEnv, identityPepper, queueProviderName } from "@heliograph/config";
 import { MetricsIngestPipeline, SaturatedError } from "./pipeline.ts";
 
 const log = createLogger({ service: "ingest" });
 const httpPort = Number(process.env.INGEST_HTTP_PORT ?? 4318);
 
 const kafka = kafkaEnv();
-const publisher = new KafkaPublisher({ brokers: kafka.brokers, clientId: kafka.clientId });
+const queue = makeQueueProvider({
+  provider: queueProviderName(),
+  kafka: { brokers: kafka.brokers, clientId: kafka.clientId },
+});
 const registry = new AdapterRegistry().register(new ClaudeCodeAdapter());
 const pipeline = new MetricsIngestPipeline({
   registry,
   hash: createIdentityHasher(identityPepper()),
   enricher: new Enricher(),
-  publisher,
+  publisher: queue.publisher(),
   metricsTopic: kafka.topics.metrics,
 });
 
 let ready = false;
-await ensureTopics({ brokers: kafka.brokers, clientId: kafka.clientId }, [
-  kafka.topics.metrics,
-  kafka.topics.events,
-  kafka.topics.dlq,
-]).then(() => (ready = true)).catch((e) => log.error("ensureTopics failed", { err: String(e) }));
+await queue
+  .init([kafka.topics.metrics, kafka.topics.events, kafka.topics.dlq])
+  .then(() => (ready = true))
+  .catch((e) => log.error("queue init failed", { err: String(e) }));
 
 const health: HealthState = { live: () => true, ready: () => ready };
 
@@ -73,7 +75,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     log.info("shutting down", { signal: sig });
     server.stop();
-    await publisher.close();
+    await queue.close();
     process.exit(0);
   });
 }
