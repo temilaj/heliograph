@@ -5,7 +5,7 @@ import {
   DEFAULT_ORG_POLICY,
   CRITICAL_CONTENT_FIELDS,
   type CanonicalMetric,
-} from "./index.ts";
+} from "@heliograph/domain";
 
 describe("domain canonical model", () => {
   test("schema version is pinned", () => {
