@@ -1,15 +1,27 @@
 // Storage provider: one cohesive contract per backend so swapping the store is a
 // config change. Vendor specifics (row shape, DDL) live inside the provider.
 import { ClickHouseClient, type ClickHouseConfig } from "./ClickHouseClient.ts";
-import { ClickHouseMetricSink, InMemoryMetricSink, type MetricSink } from "./MetricSink.ts";
+import {
+  ClickHouseEventSink,
+  ClickHouseMetricSink,
+  InMemoryEventSink,
+  InMemoryMetricSink,
+  type EventSink,
+  type MetricSink,
+} from "./MetricSink.ts";
+import {
+  ClickHouseQueryRepository,
+  InMemoryQueryRepository,
+  type QueryRepository,
+} from "./QueryRepository.ts";
 import { migrate } from "./migrate.ts";
 
 export interface StorageProvider {
   /** Apply schema (no-op for schemaless stores). */
   migrate(): Promise<void>;
   metricSink(): MetricSink;
-  // eventSink(): EventSink;      // Phase 2
-  // queryRepository(): QueryRepository;  // Phase 3
+  eventSink(): EventSink;
+  queryRepository(): QueryRepository;
   health(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -34,7 +46,8 @@ export function makeStorageProvider(cfg: StorageProviderConfig): StorageProvider
 
 class ClickHouseStorageProvider implements StorageProvider {
   private readonly ch: ClickHouseClient;
-  private sink?: ClickHouseMetricSink;
+  private mSink?: ClickHouseMetricSink;
+  private eSink?: ClickHouseEventSink;
   constructor(private readonly cfg: ClickHouseConfig) {
     this.ch = new ClickHouseClient(cfg);
   }
@@ -42,7 +55,13 @@ class ClickHouseStorageProvider implements StorageProvider {
     return migrate(this.ch, this.cfg.database).then(() => {});
   }
   metricSink(): MetricSink {
-    return (this.sink ??= new ClickHouseMetricSink(this.ch));
+    return (this.mSink ??= new ClickHouseMetricSink(this.ch));
+  }
+  eventSink(): EventSink {
+    return (this.eSink ??= new ClickHouseEventSink(this.ch));
+  }
+  queryRepository(): QueryRepository {
+    return new ClickHouseQueryRepository(this.ch);
   }
   health(): Promise<boolean> {
     return this.ch.ping();
@@ -53,9 +72,16 @@ class ClickHouseStorageProvider implements StorageProvider {
 /** In-memory provider for tests. */
 export class InMemoryStorageProvider implements StorageProvider {
   readonly sink = new InMemoryMetricSink();
+  readonly events = new InMemoryEventSink();
   async migrate(): Promise<void> {}
   metricSink(): MetricSink {
     return this.sink;
+  }
+  eventSink(): EventSink {
+    return this.events;
+  }
+  queryRepository(): QueryRepository {
+    return new InMemoryQueryRepository();
   }
   async health(): Promise<boolean> {
     return true;

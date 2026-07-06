@@ -51,9 +51,17 @@ export class ClickHouseClient {
     }
   }
 
-  /** Run a query and return parsed JSON rows (`FORMAT JSON`). */
-  async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-    const res = await fetch(this.cfg.url, {
+  /**
+   * Run a query and return parsed JSON rows (`FORMAT JSON`). Bind external input
+   * via `params` ({name:Type} in SQL -> param_name) — never string-interpolate.
+   */
+  async query<T = Record<string, unknown>>(
+    sql: string,
+    params: Record<string, string> = {},
+  ): Promise<T[]> {
+    const qs = new URLSearchParams({ database: this.cfg.database });
+    for (const [k, v] of Object.entries(params)) qs.set(`param_${k}`, v);
+    const res = await fetch(`${this.cfg.url}/?${qs.toString()}`, {
       method: "POST",
       headers: { "content-type": "text/plain", ...this.authHeaders() },
       body: `${sql} FORMAT JSON`,

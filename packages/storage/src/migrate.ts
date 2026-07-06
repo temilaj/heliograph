@@ -7,6 +7,12 @@ import { ClickHouseClient } from "./ClickHouseClient.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const ddlDir = join(here, "ddl");
 
+// Idempotent post-DDL migrations for pre-existing tables. 
+const MIGRATIONS: string[] = [
+  "ALTER TABLE hg_metrics RENAME COLUMN IF EXISTS token_type TO subtype",
+  "ALTER TABLE hg_metrics ADD COLUMN IF NOT EXISTS start_type LowCardinality(String) AFTER subtype",
+];
+
 export async function migrate(ch: ClickHouseClient, database: string): Promise<string[]> {
   await ch.command(`CREATE DATABASE IF NOT EXISTS ${database}`, { useDatabase: false });
   const files = (await readdir(ddlDir)).filter((f) => f.endsWith(".sql")).sort();
@@ -16,6 +22,7 @@ export async function migrate(ch: ClickHouseClient, database: string): Promise<s
     await ch.command(sql); // runs in `database` via the ?database= param
     applied.push(file);
   }
+  for (const stmt of MIGRATIONS) await ch.command(stmt);
   return applied;
 }
 

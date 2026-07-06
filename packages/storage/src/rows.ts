@@ -1,5 +1,5 @@
 // Canonical -> ClickHouse row mapping, colocated so DDL and write path can't drift.
-import type { CanonicalMetric } from "@heliograph/domain";
+import type { CanonicalEvent, CanonicalMetric } from "@heliograph/domain";
 
 export interface MetricRow {
   timestamp: string; // DateTime64(9) as a decimal-seconds string
@@ -14,7 +14,8 @@ export interface MetricRow {
   model: string;
   language: string;
   edit_type: string;
-  token_type: string;
+  subtype: string;
+  start_type: string;
   query_source: string;
   tool_name: string;
   decision: string;
@@ -52,7 +53,8 @@ export function metricToRow(m: CanonicalMetric): MetricRow {
     model: m.model ?? "",
     language: m.language ?? "",
     edit_type: m.editType ?? "",
-    token_type: m.tokenType ?? "",
+    subtype: m.subtype ?? "",
+    start_type: m.startType ?? "",
     query_source: m.querySource ?? "",
     tool_name: m.toolName ?? "",
     decision: m.decision ?? "",
@@ -64,5 +66,66 @@ export function metricToRow(m: CanonicalMetric): MetricRow {
     entrypoint: m.resource.appEntrypoint ?? "",
     attributes: m.attributes,
     dedup_id: m.dedupId ?? "",
+  };
+}
+
+export interface EventRow {
+  timestamp: string;
+  source: string;
+  event_type: string;
+  org_id: string;
+  user_hash: string;
+  session_id: string;
+  correlation_id: string;
+  model: string;
+  status_code: string;
+  decision: string;
+  numbers: Record<string, number>;
+  dims: Record<string, string>;
+  department: string;
+  team_id: string;
+  region: string;
+  app_version: string;
+  attributes: Record<string, string>;
+  redaction_flags: string[];
+  content_class: string;
+  content_keyid: string;
+  content_fields: Record<string, string>;
+  dedup_id: string;
+}
+
+export function eventToRow(e: CanonicalEvent): EventRow {
+  const id = e.resource.identity;
+  const contentFields: Record<string, string> = {};
+  let contentKeyId = "";
+  if (e.content) {
+    for (const [name, f] of Object.entries(e.content.fields)) {
+      contentFields[name] = f.ciphertext;
+      contentKeyId = f.keyId;
+    }
+  }
+  return {
+    timestamp: nsToClickHouse(e.timestampNs),
+    source: e.source,
+    event_type: e.eventType,
+    org_id: id.orgId,
+    user_hash: id.accountHash ?? id.userIdHash,
+    session_id: e.resource.sessionId,
+    correlation_id: e.correlationId ?? "",
+    model: e.dims["model"] ?? "",
+    status_code: e.dims["status_code"] ?? "",
+    decision: e.dims["decision"] ?? "",
+    numbers: e.numbers,
+    dims: e.dims,
+    department: e.resource.department ?? "",
+    team_id: e.resource.teamId ?? "",
+    region: e.resource.region ?? "",
+    app_version: e.resource.appVersion ?? "",
+    attributes: e.attributes,
+    redaction_flags: e.redactionFlags ?? [],
+    content_class: e.content?.classification ?? "",
+    content_keyid: contentKeyId,
+    content_fields: contentFields,
+    dedup_id: e.dedupId ?? "",
   };
 }
