@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/main.ts",
   "dependencies": {
+    "@heliograph/dashboard": "workspace:*",
     "@heliograph/domain": "workspace:*",
     "@heliograph/observability": "workspace:*",
     "@heliograph/storage": "workspace:*",
