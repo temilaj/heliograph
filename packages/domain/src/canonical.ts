@@ -75,8 +75,13 @@ export interface CanonicalMetric {
   model?: string;
   language?: string;
   editType?: string;
-  /** input | output | cacheRead | cacheCreation */
-  tokenType?: string;
+  /**
+   * Generic per-metric subtype (the OTLP `type` attribute, which several metrics
+   * overload): token.usage input|output|cacheRead|cacheCreation;
+   * lines_of_code.count added|removed; active_time.total user|cli.
+   */
+  subtype?: string;
+  startType?: string; // session.count: fresh|resume|continue|agents_view
   querySource?: string;
   toolName?: string;
   decision?: string;
@@ -101,6 +106,7 @@ export type EventType =
   | "skill_activated"
   | "mcp_server_connection"
   | "hook"
+  | "subagent"
   | "at_mention"
   | "api_retries_exhausted"
   | "compaction"
@@ -131,6 +137,13 @@ export interface CanonicalEvent {
   dims: Record<string, string>;
   /** Sensitive text: present only after opt-in + redaction + encryption. */
   content?: ContentPayload;
+  /**
+   * Transient raw sensitive fields set by adapters and consumed+cleared by the
+   * redaction pipeline. Never serialized to the queue or storage.
+   */
+  stagedContent?: Record<string, string>;
+  /** Redaction actions applied (e.g. "secret", "email"), for observability. */
+  redactionFlags?: string[];
   /** Long-tail event attributes. */
   attributes: Record<string, string>;
   dedupId?: string;

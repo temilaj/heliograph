@@ -1,11 +1,15 @@
-// Shared OTLP resource -> pseudonymized ResourceContext. Identity per ADR-0002:
+// Shared OTLP attrs -> pseudonymized ResourceContext. Identity per ADR-0002:
 // account_uuid = anchor, user.id = device, email = fallback (dropped if account present).
+//
+// IMPORTANT: real Claude Code puts identity on every metric datapoint / log record's
+// attributes, not the OTLP Resource. So adapters build context from the MERGED
+// (resource + point/record) attrs, and RESOURCE_KEYS must be stripped from stored
+// dims/attributes so raw identity never lands in storage.
 import type { Identity, ResourceContext, SourceId } from "@heliograph/domain";
-import type { OtlpResource } from "@heliograph/otlp";
 import type { AdapterContext } from "./SourceAdapter.ts";
 
-/** Resource attribute keys that are promoted/consumed, so excluded from the long tail. */
-const CONSUMED_KEYS = new Set<string>([
+/** Identity + resource keys — consumed into ResourceContext, never kept as dims. */
+export const RESOURCE_KEYS = new Set<string>([
   "service.name",
   "session.id",
   "user.id",
@@ -22,12 +26,19 @@ const CONSUMED_KEYS = new Set<string>([
   "region",
 ]);
 
-export function buildResourceContext(
+/**
+ * Build context from resource + point/record attrs. Identity and resource dims
+ * are read from the MERGE (they can live on either); the long-tail `attributes`
+ * map draws ONLY from `resourceAttrs`, so per-point event/metric fields (and any
+ * raw content) never leak into it.
+ */
+export function resourceContextFromAttrs(
   source: SourceId,
-  resource: OtlpResource,
+  resourceAttrs: Record<string, string>,
+  pointAttrs: Record<string, string>,
   ctx: AdapterContext,
 ): ResourceContext {
-  const a = resource.attributes;
+  const a = { ...resourceAttrs, ...pointAttrs };
 
   const identity: Identity = {
     orgId: a["organization.id"] ?? "unknown",
@@ -43,8 +54,8 @@ export function buildResourceContext(
   }
 
   const attributes: Record<string, string> = {};
-  for (const [k, v] of Object.entries(a)) {
-    if (!CONSUMED_KEYS.has(k)) attributes[k] = v;
+  for (const [k, v] of Object.entries(resourceAttrs)) {
+    if (!RESOURCE_KEYS.has(k)) attributes[k] = v;
   }
 
   return {

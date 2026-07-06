@@ -1,11 +1,15 @@
 // Sets a deterministic dedupId so ReplacingMergeTree collapses at-least-once dupes.
-import type { CanonicalMetric } from "@heliograph/domain";
+import type { CanonicalEvent, CanonicalMetric } from "@heliograph/domain";
 import { sha256 } from "./hash.ts";
 
 export class Enricher {
   enrichMetric(m: CanonicalMetric): CanonicalMetric {
     m.dedupId = metricDedupId(m);
     return m;
+  }
+  enrichEvent(e: CanonicalEvent): CanonicalEvent {
+    e.dedupId = eventDedupId(e);
+    return e;
   }
 }
 
@@ -15,7 +19,8 @@ export function metricDedupId(m: CanonicalMetric): string {
     m.model,
     m.language,
     m.editType,
-    m.tokenType,
+    m.subtype,
+    m.startType,
     m.querySource,
     m.toolName,
     m.decision,
@@ -27,6 +32,25 @@ export function metricDedupId(m: CanonicalMetric): string {
     m.timestampNs.toString(),
     m.value.toString(),
     dims,
-  ].join("");
+  ].join("");
+  return sha256(parts);
+}
+
+/** Dedup key for an event: identity + type + ts + correlation + sorted fields. */
+export function eventDedupId(e: CanonicalEvent): string {
+  const stable = (o: Record<string, unknown>) =>
+    Object.keys(o)
+      .sort()
+      .map((k) => `${k}=${o[k]}`)
+      .join(",");
+  const parts = [
+    e.source,
+    e.eventType,
+    e.resource.sessionId,
+    e.timestampNs.toString(),
+    e.correlationId ?? "",
+    stable(e.numbers),
+    stable(e.dims),
+  ].join("|");
   return sha256(parts);
 }

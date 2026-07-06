@@ -1,6 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { decodeMetricsJson } from "@heliograph/otlp";
-import { AdapterRegistry, ClaudeCodeAdapter } from "@heliograph/adapters";
+import { AdapterRegistry, ClaudeCodeAdapter, resourceContextFromAttrs } from "@heliograph/adapters";
 import { createIdentityHasher } from "@heliograph/enrichment";
 import { claudeCodeMetricsPayload } from "../tools/loadgen/src/payload.ts";
 
@@ -12,8 +12,7 @@ function mapAll() {
   const registry = new AdapterRegistry().register(new ClaudeCodeAdapter());
   return decoded.groups.flatMap((g) => {
     const adapter = registry.resolve(g.scope);
-    const rc = adapter.buildResourceContext(g.resource, ctx);
-    return g.points.flatMap((p) => adapter.toMetrics(p, rc));
+    return g.points.flatMap((p) => adapter.toMetrics(p, g.resource, ctx));
   });
 }
 
@@ -31,27 +30,38 @@ describe("ClaudeCodeAdapter", () => {
     expect([...names].some((n) => n.startsWith("claude_code."))).toBe(false);
   });
 
-  test("promotes hot dimensions and keeps token breakdown", () => {
+  test("promotes hot dimensions and keeps token breakdown in `subtype`", () => {
     const tokens = mapAll().filter((m) => m.name === "token.usage");
-    expect(tokens.map((t) => t.tokenType).sort()).toEqual(["cacheRead", "input", "output"]);
+    expect(tokens.map((t) => t.subtype).sort()).toEqual([
+      "cacheCreation",
+      "cacheRead",
+      "input",
+      "output",
+    ]);
     expect(tokens.every((t) => t.model === "claude-opus-4-8")).toBe(true);
   });
 
-  test("pseudonymizes identity and NEVER carries raw email/account", () => {
+  test("identity comes from datapoint attrs, is hashed, and NEVER stored raw", () => {
     const m = mapAll()[0]!;
     const id = m.resource.identity;
-    expect(id.orgId).toBe("org_acme"); // tenant kept raw
-    expect(id.accountHash).toBe(hash("acct-uuid-999")); // account is the anchor
+    expect(id.orgId).toBe("org_acme"); // real org from datapoint attrs
+    expect(id.accountHash).toBe(hash("acct-uuid-999")); // account anchor
     expect(id.emailHash).toBeUndefined(); // email dropped when account present
-    const blob = JSON.stringify(m, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
-    expect(blob).not.toContain("jane.doe@acme.com");
-    expect(blob).not.toContain("acct-uuid-999");
+    // no raw identity survives anywhere on the metric (dims or serialized form)
+    for (const metric of mapAll()) {
+      const blob = JSON.stringify(metric, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+      expect(blob).not.toContain("jane.doe@acme.com");
+      expect(blob).not.toContain("acct-uuid-999");
+      expect(blob).not.toContain("user_01ABC");
+      expect(metric.attributes["user.email"]).toBeUndefined();
+    }
   });
 
-  test("email is used as fallback only when no account id", () => {
-    const adapter = new ClaudeCodeAdapter();
-    const rc = adapter.buildResourceContext(
-      { attributes: { "service.name": "claude-code", "user.email": "x@y.com" } },
+  test("email is a fallback only when no account id is present", () => {
+    const rc = resourceContextFromAttrs(
+      "claude_code",
+      { "service.name": "claude-code" },
+      { "user.email": "x@y.com" },
       ctx,
     );
     expect(rc.identity.accountHash).toBeUndefined();

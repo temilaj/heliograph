@@ -1,13 +1,16 @@
 // Claude Code adapter — the only file that knows `claude_code.*`. Strips the
-// prefix, promotes hot dims. Events arrive in Phase 2. See docs/ARCHITECTURE.md.
+// prefix, promotes hot dims, and (critically) builds identity from the MERGED
+// resource + point/record attributes, stripping RESOURCE_KEYS so raw identity is
+// never stored. See docs/ARCHITECTURE.md.
 import {
   CURRENT_SCHEMA_VERSION,
+  type CanonicalEvent,
   type CanonicalMetric,
-  type ResourceContext,
 } from "@heliograph/domain";
-import type { OtlpMetricPoint, OtlpResource, ResourceScope } from "@heliograph/otlp";
+import type { OtlpLogRecord, OtlpMetricPoint, OtlpResource, ResourceScope } from "@heliograph/otlp";
 import type { AdapterContext, SourceAdapter } from "../SourceAdapter.ts";
-import { buildResourceContext } from "../resource.ts";
+import { RESOURCE_KEYS, resourceContextFromAttrs } from "../resource.ts";
+import { CONSUMED_EVENT_KEYS, CONTENT_KEYS, isNumeric, toEventType } from "./events.ts";
 
 const VENDOR_PREFIX = "claude_code.";
 
@@ -16,7 +19,8 @@ const PROMOTED: Array<[attrKey: string, field: keyof CanonicalMetric]> = [
   ["model", "model"],
   ["language", "language"],
   ["edit_type", "editType"],
-  ["type", "tokenType"], // token.usage breakdown: input|output|cacheRead|cacheCreation
+  ["type", "subtype"], // generic subtype: token breakdown / added-removed / user-cli
+  ["start_type", "startType"], // session.count: fresh|resume|continue|agents_view
   ["query_source", "querySource"],
   ["tool_name", "toolName"],
   ["decision", "decision"],
@@ -37,11 +41,8 @@ export class ClaudeCodeAdapter implements SourceAdapter {
     );
   }
 
-  buildResourceContext(resource: OtlpResource, ctx: AdapterContext): ResourceContext {
-    return buildResourceContext(this.source, resource, ctx);
-  }
-
-  toMetrics(point: OtlpMetricPoint, rc: ResourceContext): CanonicalMetric[] {
+  toMetrics(point: OtlpMetricPoint, resource: OtlpResource, ctx: AdapterContext): CanonicalMetric[] {
+    const rc = resourceContextFromAttrs(this.source, resource.attributes, point.attributes, ctx);
     const name = point.name.startsWith(VENDOR_PREFIX)
       ? point.name.slice(VENDOR_PREFIX.length)
       : point.name;
@@ -64,9 +65,44 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       if (v !== undefined) writable[field] = v;
     }
     for (const [k, v] of Object.entries(point.attributes)) {
-      if (!PROMOTED_KEYS.has(k)) metric.attributes[k] = v;
+      // Never keep promoted keys or identity/resource keys (PII) as attributes.
+      if (!PROMOTED_KEYS.has(k) && !RESOURCE_KEYS.has(k)) metric.attributes[k] = v;
     }
 
     return [metric];
+  }
+
+  toEvents(record: OtlpLogRecord, resource: OtlpResource, ctx: AdapterContext): CanonicalEvent[] {
+    const rc = resourceContextFromAttrs(this.source, resource.attributes, record.attributes, ctx);
+
+    const numbers: Record<string, number> = {};
+    const dims: Record<string, string> = {};
+    const stagedContent: Record<string, string> = {};
+
+    for (const [k, v] of Object.entries(record.attributes)) {
+      // Drop consumed markers and identity/resource keys (PII) — never dims.
+      if (CONSUMED_EVENT_KEYS.has(k) || RESOURCE_KEYS.has(k)) continue;
+      if (CONTENT_KEYS.has(k)) stagedContent[k] = v;
+      else if (isNumeric(v)) numbers[k] = Number(v);
+      else dims[k] = v;
+    }
+
+    const eventType = toEventType(record.eventName);
+    // Preserve the raw name of unrecognized events so we can extend the taxonomy.
+    if (eventType === "unknown" && record.eventName) dims["event.name"] = record.eventName;
+
+    const event: CanonicalEvent = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      source: this.source,
+      eventType,
+      timestampNs: record.timestampNs,
+      resource: rc,
+      correlationId: record.attributes["prompt.id"],
+      numbers,
+      dims,
+      attributes: {},
+    };
+    if (Object.keys(stagedContent).length > 0) event.stagedContent = stagedContent;
+    return [event];
   }
 }
