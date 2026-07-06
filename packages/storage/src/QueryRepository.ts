@@ -111,6 +111,63 @@ export interface TeamDetail {
   tools: { tool: string; uses: number; successRate: number; avgMs: number }[];
 }
 
+// --- capabilities (Phase 7). Plugins/hooks are dims/numbers-map reads on
+// hg_events; mcpServers reads the mcp_server dim the adapter splits from
+// mcp__<server>__<tool> tool names (accrues from new telemetry). ---
+export interface PluginRow {
+  name: string;
+  version: string;
+  marketplace: string;
+  scope: string;
+  enabledVia: string;
+  hasHooks: boolean;
+  hasMcp: boolean;
+  skills: number; // bundled skill/command/agent path counts
+  commands: number;
+  agents: number;
+  events: number;
+}
+
+export interface HookEventRow {
+  hookEvent: string; // Stop / Notification / ...
+  executions: number;
+  hooks: number;
+  success: number;
+  blocking: number;
+  cancelled: number;
+  errors: number; // non-blocking errors
+  avgMs: number;
+}
+
+export interface McpServerRow {
+  server: string;
+  calls: number;
+  successRate: number;
+  avgMs: number;
+}
+
+export interface CapabilitiesSummary {
+  plugins: PluginRow[];
+  hooks: HookEventRow[];
+  hooksBySource: { source: string; count: number }[];
+  mcp: {
+    connections: number;
+    avgConnectMs: number;
+    pluginProvided: number;
+    byTransport: { transport: string; count: number }[];
+  };
+  mcpServers: McpServerRow[];
+  skills: { name: string; count: number }[];
+  sessionStarts: { startType: string; count: number }[];
+}
+
+export interface PluginDetail {
+  info: PluginRow | null;
+  versions: { version: string; count: number }[];
+  users: { userHash: string; events: number }[];
+  byDay: { day: string; events: number }[];
+}
+
 export interface QueryRepository {
   /** Distinct orgs we've received telemetry from, most-recent first. */
   orgs(): Promise<OrgInfo[]>;
@@ -131,6 +188,10 @@ export interface QueryRepository {
   teams(r: DateRange): Promise<TeamRow[]>;
   /** One team's trend, members, model and tool mix. */
   teamDetail(r: DateRange, team: string): Promise<TeamDetail>;
+  /** Capability adoption: plugins, hooks, MCP, skills, session starts. */
+  capabilities(r: DateRange): Promise<CapabilitiesSummary>;
+  /** One plugin's info, version spread, adopters, timeline. */
+  pluginDetail(r: DateRange, name: string): Promise<PluginDetail>;
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -523,13 +584,323 @@ export class ClickHouseQueryRepository implements QueryRepository {
     return rows.map((x) => ({ day: x.day, model: x.model || "(unknown)", cost: num(x.v) }));
   }
 
-  // TODO(phase-6 backend agent): real membership-join SQL replaces these stubs.
-  async teams(): Promise<TeamRow[]> {
-    return [];
+  async teams(r: DateRange): Promise<TeamRow[]> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // ANY LEFT JOIN membership (FINAL) on user_hash; unmatched users bucket as "(unassigned)".
+    const join =
+      "ANY LEFT JOIN (SELECT account_hash, team FROM hg_team_membership FINAL WHERE org_id = {org:String}) tm ON user_hash = tm.account_hash";
+    const teamExpr = "if(tm.team != '', tm.team, '(unassigned)')";
+    // Metric-name literals are hardcoded (not user input); merge with events in TS.
+    const [metricRows, toolRows] = await Promise.all([
+      this.ch.query<{ team: string; members: number; cost: number; tokens: number; sessions: number }>(
+        `SELECT ${teamExpr} AS team, uniqExact(user_hash) AS members,
+                sumIf(value, name = 'cost.usage') AS cost,
+                sumIf(value, name = 'token.usage') AS tokens,
+                uniqExact(session_id) AS sessions
+         FROM hg_metrics FINAL ${join}
+         WHERE ${where} GROUP BY team ORDER BY cost DESC`,
+        p,
+      ),
+      this.ch.query<{ team: string; toolCalls: number }>(
+        `SELECT ${teamExpr} AS team, count() AS toolCalls
+         FROM hg_events FINAL ${join}
+         WHERE ${where} AND event_type = 'tool_result' GROUP BY team`,
+        p,
+      ),
+    ]);
+    const tools = new Map(toolRows.map((t) => [t.team, num(t.toolCalls)]));
+    const seen = new Set<string>();
+    const rows: TeamRow[] = metricRows.map((m) => {
+      seen.add(m.team);
+      return {
+        team: m.team,
+        members: num(m.members),
+        cost: num(m.cost),
+        tokens: num(m.tokens),
+        sessions: num(m.sessions),
+        toolCalls: tools.get(m.team) ?? 0,
+      };
+    });
+    // Teams with only tool events (no metrics) still count.
+    for (const t of toolRows) {
+      if (seen.has(t.team)) continue;
+      rows.push({ team: t.team, members: 0, cost: 0, tokens: 0, sessions: 0, toolCalls: num(t.toolCalls) });
+    }
+    return rows.sort((a, b) => b.cost - a.cost);
   }
-  async teamDetail(): Promise<TeamDetail> {
-    return { costByDay: [], members: [], models: [], tools: [] };
+
+  async teamDetail(r: DateRange, team: string): Promise<TeamDetail> {
+    // team is bound ({t:String}) — "(unassigned)" works as a value, never interpolated.
+    const p = { org: r.org, from: r.from, to: r.to, t: team };
+    const join =
+      "ANY LEFT JOIN (SELECT account_hash, team FROM hg_team_membership FINAL WHERE org_id = {org:String}) tm ON user_hash = tm.account_hash";
+    const teamExpr = "if(tm.team != '', tm.team, '(unassigned)')";
+    const where = `org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND ${teamExpr} = {t:String}`;
+    const [costByDay, members, models, tools] = await Promise.all([
+      this.ch.query<{ day: string; v: number }>(
+        `SELECT toString(event_date) AS day, sum(value) AS v FROM hg_metrics FINAL ${join}
+         WHERE ${where} AND name = 'cost.usage' GROUP BY event_date ORDER BY event_date`,
+        p,
+      ),
+      this.ch.query<{ userHash: string; cost: number; tokens: number; sessions: number }>(
+        `SELECT user_hash AS userHash,
+                sumIf(value, name = 'cost.usage') AS cost,
+                sumIf(value, name = 'token.usage') AS tokens,
+                uniqExact(session_id) AS sessions
+         FROM hg_metrics FINAL ${join}
+         WHERE ${where} GROUP BY userHash ORDER BY cost DESC LIMIT 100`,
+        p,
+      ),
+      this.ch.query<{ k: string; v: number }>(
+        `SELECT model AS k, sum(value) AS v FROM hg_metrics FINAL ${join}
+         WHERE ${where} AND name = 'cost.usage' GROUP BY k ORDER BY v DESC`,
+        p,
+      ),
+      this.ch.query<{ tool: string; uses: number; successRate: number; avgMs: number }>(
+        `SELECT dims['tool_name'] AS tool, count() AS uses,
+                countIf(dims['success'] = 'true') / count() AS successRate,
+                avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgMs
+         FROM hg_events FINAL ${join}
+         WHERE ${where} AND event_type = 'tool_result' AND dims['tool_name'] != ''
+         GROUP BY tool ORDER BY uses DESC LIMIT 20`,
+        p,
+      ),
+    ]);
+    return {
+      costByDay: costByDay.map((x) => ({ day: x.day, cost: num(x.v) })),
+      members: members.map((x) => ({ userHash: x.userHash, cost: num(x.cost), tokens: num(x.tokens), sessions: num(x.sessions) })),
+      models: models.map((x) => ({ model: x.k || "(unknown)", cost: num(x.v) })),
+      tools: tools.map((x) => ({ tool: x.tool || "(unknown)", uses: num(x.uses), successRate: num(x.successRate), avgMs: num(x.avgMs) })),
+    };
   }
+
+  async capabilities(r: DateRange): Promise<CapabilitiesSummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // event_type literals are hardcoded (not user input).
+    const inEvent = (et: string) => `${where} AND event_type = '${et}'`;
+
+    const [plugins, hooks, hooksBySource, mcp, mcpByTransport, mcpServers, skills, sessionStarts] =
+      await Promise.all([
+        // Plugins: one row per plugin.name; flags fold has_hooks/has_mcp string dims to bool,
+        // bundle counts read the per-install path counts.
+        this.ch.query<{
+          name: string;
+          version: string;
+          marketplace: string;
+          scope: string;
+          enabledVia: string;
+          hasHooks: number;
+          hasMcp: number;
+          skills: number;
+          commands: number;
+          agents: number;
+          events: number;
+        }>(
+          `SELECT dims['plugin.name'] AS name,
+                  any(dims['plugin.version']) AS version,
+                  any(dims['marketplace.name']) AS marketplace,
+                  any(dims['plugin.scope']) AS scope,
+                  any(dims['enabled_via']) AS enabledVia,
+                  any(dims['has_hooks']) = 'true' AS hasHooks,
+                  any(dims['has_mcp']) = 'true' AS hasMcp,
+                  max(numbers['skill_path_count']) AS skills,
+                  max(numbers['command_path_count']) AS commands,
+                  max(numbers['agent_path_count']) AS agents,
+                  count() AS events
+           FROM hg_events FINAL WHERE ${inEvent("plugin")} AND dims['plugin.name'] != ''
+           GROUP BY name ORDER BY events DESC`,
+          p,
+        ),
+        // Hooks: per hook_event executions + summed outcome counters + avg total duration.
+        this.ch.query<{
+          hookEvent: string;
+          executions: number;
+          hooks: number;
+          success: number;
+          blocking: number;
+          cancelled: number;
+          errors: number;
+          avgMs: number;
+        }>(
+          `SELECT dims['hook_event'] AS hookEvent, count() AS executions,
+                  sum(numbers['num_hooks']) AS hooks,
+                  sum(numbers['num_success']) AS success,
+                  sum(numbers['num_blocking']) AS blocking,
+                  sum(numbers['num_cancelled']) AS cancelled,
+                  sum(numbers['num_non_blocking_error']) AS errors,
+                  avgIf(numbers['total_duration_ms'], mapContains(numbers, 'total_duration_ms')) AS avgMs
+           FROM hg_events FINAL WHERE ${inEvent("hook")}
+           GROUP BY hookEvent ORDER BY executions DESC`,
+          p,
+        ),
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT dims['hook_source'] AS k, count() AS v
+           FROM hg_events FINAL WHERE ${inEvent("hook")} GROUP BY k ORDER BY v DESC`,
+          p,
+        ),
+        // MCP connections (thin — no server name; that accrues on tool_result via the adapter split).
+        this.ch.query<{ connections: number; avgConnectMs: number; pluginProvided: number }>(
+          `SELECT count() AS connections,
+                  avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgConnectMs,
+                  countIf(dims['is_plugin'] = 'true') AS pluginProvided
+           FROM hg_events FINAL WHERE ${inEvent("mcp_server_connection")}`,
+          p,
+        ),
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT dims['transport_type'] AS k, count() AS v
+           FROM hg_events FINAL WHERE ${inEvent("mcp_server_connection")} GROUP BY k ORDER BY v DESC`,
+          p,
+        ),
+        // Per-server MCP usage from the mcp_server dim the adapter splits off tool names.
+        this.ch.query<{ server: string; calls: number; successRate: number; avgMs: number }>(
+          `SELECT dims['mcp_server'] AS server, count() AS calls,
+                  countIf(dims['success'] = 'true') / count() AS successRate,
+                  avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgMs
+           FROM hg_events FINAL WHERE ${inEvent("tool_result")} AND dims['mcp_server'] != ''
+           GROUP BY server ORDER BY calls DESC LIMIT 20`,
+          p,
+        ),
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT dims['skill.name'] AS k, count() AS v FROM hg_events FINAL
+           WHERE ${inEvent("skill_activated")} AND dims['skill.name'] != '' GROUP BY k ORDER BY v DESC LIMIT 20`,
+          p,
+        ),
+        // session.count: prefer the promoted start_type column, fall back to attributes map.
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT if(start_type != '', start_type, attributes['start_type']) AS k, sum(value) AS v
+           FROM hg_metrics FINAL WHERE ${where} AND name = 'session.count' GROUP BY k ORDER BY v DESC`,
+          p,
+        ),
+      ]);
+
+    return {
+      plugins: plugins.map((x) => ({
+        name: x.name,
+        version: x.version || "",
+        marketplace: x.marketplace || "",
+        scope: x.scope || "",
+        enabledVia: x.enabledVia || "",
+        hasHooks: num(x.hasHooks) === 1,
+        hasMcp: num(x.hasMcp) === 1,
+        skills: num(x.skills),
+        commands: num(x.commands),
+        agents: num(x.agents),
+        events: num(x.events),
+      })),
+      hooks: hooks.map((x) => ({
+        hookEvent: x.hookEvent || "(none)",
+        executions: num(x.executions),
+        hooks: num(x.hooks),
+        success: num(x.success),
+        blocking: num(x.blocking),
+        cancelled: num(x.cancelled),
+        errors: num(x.errors),
+        avgMs: num(x.avgMs),
+      })),
+      hooksBySource: hooksBySource.map((x) => ({ source: x.k || "(none)", count: num(x.v) })),
+      mcp: {
+        connections: num(mcp[0]?.connections),
+        avgConnectMs: num(mcp[0]?.avgConnectMs),
+        pluginProvided: num(mcp[0]?.pluginProvided),
+        byTransport: mcpByTransport.map((x) => ({ transport: x.k || "(none)", count: num(x.v) })),
+      },
+      mcpServers: mcpServers.map((x) => ({
+        server: x.server,
+        calls: num(x.calls),
+        successRate: num(x.successRate),
+        avgMs: num(x.avgMs),
+      })),
+      skills: skills.map((x) => ({ name: x.k, count: num(x.v) })),
+      sessionStarts: sessionStarts.map((x) => ({ startType: x.k || "(none)", count: num(x.v) })),
+    };
+  }
+
+  async pluginDetail(r: DateRange, name: string): Promise<PluginDetail> {
+    // name is bound ({n:String}) into the dims map lookup — never interpolated.
+    const p = { org: r.org, from: r.from, to: r.to, n: name };
+    const where =
+      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND event_type = 'plugin' AND dims['plugin.name'] = {n:String}";
+    const [info, versions, users, byDay] = await Promise.all([
+      // Single grouped aggregate (same shape as the plugins list); count() = 0 => not seen in range.
+      this.ch.query<{
+        version: string;
+        marketplace: string;
+        scope: string;
+        enabledVia: string;
+        hasHooks: number;
+        hasMcp: number;
+        skills: number;
+        commands: number;
+        agents: number;
+        events: number;
+      }>(
+        `SELECT any(dims['plugin.version']) AS version,
+                any(dims['marketplace.name']) AS marketplace,
+                any(dims['plugin.scope']) AS scope,
+                any(dims['enabled_via']) AS enabledVia,
+                any(dims['has_hooks']) = 'true' AS hasHooks,
+                any(dims['has_mcp']) = 'true' AS hasMcp,
+                max(numbers['skill_path_count']) AS skills,
+                max(numbers['command_path_count']) AS commands,
+                max(numbers['agent_path_count']) AS agents,
+                count() AS events
+         FROM hg_events FINAL WHERE ${where}`,
+        p,
+      ),
+      this.ch.query<{ k: string; v: number }>(
+        `SELECT dims['plugin.version'] AS k, count() AS v FROM hg_events FINAL
+         WHERE ${where} AND dims['plugin.version'] != '' GROUP BY k ORDER BY v DESC`,
+        p,
+      ),
+      this.ch.query<{ userHash: string; events: number }>(
+        `SELECT user_hash AS userHash, count() AS events FROM hg_events FINAL
+         WHERE ${where} GROUP BY userHash ORDER BY events DESC LIMIT 20`,
+        p,
+      ),
+      this.ch.query<{ day: string; v: number }>(
+        `SELECT toString(event_date) AS day, count() AS v FROM hg_events FINAL
+         WHERE ${where} GROUP BY event_date ORDER BY event_date`,
+        p,
+      ),
+    ]);
+    const row = info[0];
+    const infoRow: PluginRow | null =
+      row && num(row.events) > 0
+        ? {
+            name,
+            version: row.version || "",
+            marketplace: row.marketplace || "",
+            scope: row.scope || "",
+            enabledVia: row.enabledVia || "",
+            hasHooks: num(row.hasHooks) === 1,
+            hasMcp: num(row.hasMcp) === 1,
+            skills: num(row.skills),
+            commands: num(row.commands),
+            agents: num(row.agents),
+            events: num(row.events),
+          }
+        : null;
+    return {
+      info: infoRow,
+      versions: versions.map((x) => ({ version: x.k || "(none)", count: num(x.v) })),
+      users: users.map((x) => ({ userHash: x.userHash, events: num(x.events) })),
+      byDay: byDay.map((x) => ({ day: x.day, events: num(x.v) })),
+    };
+  }
+}
+
+function emptyCapabilities(): CapabilitiesSummary {
+  return {
+    plugins: [],
+    hooks: [],
+    hooksBySource: [],
+    mcp: { connections: 0, avgConnectMs: 0, pluginProvided: 0, byTransport: [] },
+    mcpServers: [],
+    skills: [],
+    sessionStarts: [],
+  };
 }
 
 /** Empty results — for the in-memory provider (read-api runs against ClickHouse). */
@@ -585,5 +956,11 @@ export class InMemoryQueryRepository implements QueryRepository {
   }
   async teamDetail(): Promise<TeamDetail> {
     return { costByDay: [], members: [], models: [], tools: [] };
+  }
+  async capabilities(): Promise<CapabilitiesSummary> {
+    return emptyCapabilities();
+  }
+  async pluginDetail(): Promise<PluginDetail> {
+    return { info: null, versions: [], users: [], byDay: [] };
   }
 }

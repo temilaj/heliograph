@@ -19,6 +19,11 @@ import {
   InMemoryPersonDirectory,
   type PersonDirectory,
 } from "./PersonDirectory.ts";
+import {
+  ClickHouseTeamMembership,
+  InMemoryTeamMembership,
+  type TeamMembership,
+} from "./TeamMembership.ts";
 import { migrate } from "./migrate.ts";
 
 export interface StorageProvider {
@@ -29,6 +34,8 @@ export interface StorageProvider {
   queryRepository(): QueryRepository;
   /** RBAC-gated identity directory (ADR-0002); resolves user_hash → person. */
   personDirectory(): PersonDirectory;
+  /** Team membership store; maps account_hash → team for rollups. */
+  teamMembership(): TeamMembership;
   health(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -73,6 +80,9 @@ class ClickHouseStorageProvider implements StorageProvider {
   personDirectory(): PersonDirectory {
     return new ClickHousePersonDirectory(this.ch);
   }
+  teamMembership(): TeamMembership {
+    return new ClickHouseTeamMembership(this.ch);
+  }
   health(): Promise<boolean> {
     return this.ch.ping();
   }
@@ -84,6 +94,7 @@ export class InMemoryStorageProvider implements StorageProvider {
   readonly sink = new InMemoryMetricSink();
   readonly events = new InMemoryEventSink();
   readonly directory = new InMemoryPersonDirectory();
+  readonly membership = new InMemoryTeamMembership();
   async migrate(): Promise<void> {}
   metricSink(): MetricSink {
     return this.sink;
@@ -96,6 +107,9 @@ export class InMemoryStorageProvider implements StorageProvider {
   }
   personDirectory(): PersonDirectory {
     return this.directory;
+  }
+  teamMembership(): TeamMembership {
+    return this.membership;
   }
   async health(): Promise<boolean> {
     return true;
