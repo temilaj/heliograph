@@ -43,3 +43,10 @@ export function clickhouseEnv(): ClickHouseEnv {
 export function identityPepper(): string {
   return req("IDENTITY_PEPPER", "dev-only-change-me");
 }
+
+export function queueProviderName(): "kafka" | "memory" {
+  return (process.env.QUEUE_PROVIDER as "kafka" | "memory") || "kafka";
+}
+export function storeProviderName(): "clickhouse" | "memory" {
+  return (process.env.STORE_PROVIDER as "clickhouse" | "memory") || "clickhouse";
+}

@@ -17,22 +17,9 @@ export type SourceId = "claude_code" | "codex" | "cursor" | "unknown";
 export const CURRENT_SCHEMA_VERSION = 1 as const;
 
 /**
- * Pseudonymized identity claims. Raw email / account UUID never leave the
- * redaction layer. `orgId` is the tenant key and is kept raw (low cardinality,
- * needed for scoping every query).
- *
- * Identity priority (see docs/DECISIONS.md, ADR-0002):
- *   1. `accountHash`  — PRIMARY person anchor (from `user.account_uuid`).
- *   2. `userIdHash`   — DEVICE-scoped only (`user.id` is per-install, so a
- *                       person with two machines has two of these). Never use
- *                       it as the person key; it's for device-level analysis.
- *   3. `emailHash`    — FALLBACK join only, for sources that emit no better id.
- *                       Email is mutable PII, so it must never be the primary key.
- *
- * No vendor id is guaranteed stable across an email change, so a person is
- * ultimately resolved to a canonical `person_id` at read time via the
- * RBAC-gated `person_directory` (SCIM-fed, keyed on the IdP's immutable
- * externalId). These hashes are the join keys into that directory.
+ * Pseudonymized identity. Priority: accountHash (anchor) > userIdHash (device) >
+ * emailHash (fallback). Raw values never persist. Resolved to a person_id at read
+ * time via person_directory. See docs/DECISIONS.md ADR-0002.
  */
 export interface Identity {
   /** `organization.id` — tenant key, kept raw. Always present. */
