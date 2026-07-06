@@ -1,0 +1,17 @@
+{
+  "org": "org_acme",
+  "people": [
+    {
+      "accountUuid": "11111111-1111-1111-1111-111111111111",
+      "displayName": "Ada Lovelace",
+      "email": "ada@acme.example",
+      "externalId": "scim-ada-001"
+    },
+    {
+      "accountUuid": "22222222-2222-2222-2222-222222222222",
+      "displayName": "Alan Turing",
+      "email": "alan@acme.example",
+      "externalId": "scim-alan-002"
+    }
+  ]
+}

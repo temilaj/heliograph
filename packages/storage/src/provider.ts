@@ -14,6 +14,11 @@ import {
   InMemoryQueryRepository,
   type QueryRepository,
 } from "./QueryRepository.ts";
+import {
+  ClickHousePersonDirectory,
+  InMemoryPersonDirectory,
+  type PersonDirectory,
+} from "./PersonDirectory.ts";
 import { migrate } from "./migrate.ts";
 
 export interface StorageProvider {
@@ -22,6 +27,8 @@ export interface StorageProvider {
   metricSink(): MetricSink;
   eventSink(): EventSink;
   queryRepository(): QueryRepository;
+  /** RBAC-gated identity directory (ADR-0002); resolves user_hash → person. */
+  personDirectory(): PersonDirectory;
   health(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -63,6 +70,9 @@ class ClickHouseStorageProvider implements StorageProvider {
   queryRepository(): QueryRepository {
     return new ClickHouseQueryRepository(this.ch);
   }
+  personDirectory(): PersonDirectory {
+    return new ClickHousePersonDirectory(this.ch);
+  }
   health(): Promise<boolean> {
     return this.ch.ping();
   }
@@ -73,6 +83,7 @@ class ClickHouseStorageProvider implements StorageProvider {
 export class InMemoryStorageProvider implements StorageProvider {
   readonly sink = new InMemoryMetricSink();
   readonly events = new InMemoryEventSink();
+  readonly directory = new InMemoryPersonDirectory();
   async migrate(): Promise<void> {}
   metricSink(): MetricSink {
     return this.sink;
@@ -82,6 +93,9 @@ export class InMemoryStorageProvider implements StorageProvider {
   }
   queryRepository(): QueryRepository {
     return new InMemoryQueryRepository();
+  }
+  personDirectory(): PersonDirectory {
+    return this.directory;
   }
   async health(): Promise<boolean> {
     return true;

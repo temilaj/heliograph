@@ -13,12 +13,13 @@
     "bun": ">=1.3.0"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/dashboard",
     "test": "bun test",
     "ingest": "bun run apps/ingest/src/main.ts",
     "processor": "bun run apps/processor/src/main.ts",
     "read-api": "bun run apps/read-api/src/main.ts",
     "loadgen": "bun run tools/loadgen/src/main.ts",
+    "directory:load": "bun run tools/directory-loader/src/main.ts",
     "migrate": "bun run packages/storage/src/migrate.ts",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down -v"

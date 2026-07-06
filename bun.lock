@@ -54,6 +54,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@heliograph/config": "workspace:*",
+        "@heliograph/dashboard": "workspace:*",
         "@heliograph/domain": "workspace:*",
         "@heliograph/observability": "workspace:*",
         "@heliograph/storage": "workspace:*",

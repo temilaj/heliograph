@@ -1,0 +1,12 @@
+{
+  "name": "@heliograph/directory-loader",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "dependencies": {
+    "@heliograph/storage": "workspace:*",
+    "@heliograph/enrichment": "workspace:*",
+    "@heliograph/config": "workspace:*"
+  }
+}

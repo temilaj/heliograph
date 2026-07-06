@@ -4,7 +4,6 @@
 #   ClickHouse — columnar OLAP sink (metrics + events)
 #   ingest / processor / read-api — the Bun services (mounted from source)
 #
-# Phase 0 goal: `docker compose up -d redpanda clickhouse` -> both healthy;
 # the three services boot and answer /healthz.
 
 services:
