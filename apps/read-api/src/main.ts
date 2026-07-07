@@ -28,6 +28,7 @@ const spaRoutes = {
   "/teams/:team": dashboard,
   "/capabilities": dashboard,
   "/capabilities/plugins/:name": dashboard,
+  "/reliability": dashboard,
 };
 
 const server = Bun.serve({
@@ -79,7 +80,7 @@ const server = Bun.serve({
     // Drill-down reads (Phase 2). The trailing path segment is decoded and bound
     // as a query parameter downstream — never interpolated into SQL.
     const drill = url.pathname.match(
-      /^\/v1\/(people|models|tools|agents|teams|capabilities|plugins|cost-timeseries)(?:\/([^/]+))?$/,
+      /^\/v1\/(people|models|tools|agents|teams|capabilities|plugins|reliability|cost-timeseries)(?:\/([^/]+))?$/,
     );
     if (drill) {
       const org = orgFrom(req);
@@ -93,9 +94,11 @@ const server = Bun.serve({
           case "models":
             return id ? json(200, await queries.modelDetail(r, id)) : json(400, { message: "missing model" });
           case "tools":
-            return id ? json(200, await queries.toolDetail(r, id)) : json(400, { message: "missing tool" });
+            return json(200, id ? await queries.toolDetail(r, id) : await queries.toolsList(r));
           case "agents":
-            return id ? json(200, await queries.agentDetail(r, id)) : json(400, { message: "missing agent type" });
+            return json(200, id ? await queries.agentDetail(r, id) : await queries.agentsList(r));
+          case "reliability":
+            return json(200, await queries.reliability(r));
           case "teams":
             return json(200, id ? await queries.teamDetail(r, id) : await queries.teams(r));
           case "capabilities":

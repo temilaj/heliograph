@@ -14,6 +14,7 @@ import { Teams } from "./pages/Teams.tsx";
 import { TeamDetail } from "./pages/TeamDetail.tsx";
 import { Capabilities } from "./pages/Capabilities.tsx";
 import { PluginDetail } from "./pages/PluginDetail.tsx";
+import { Reliability } from "./pages/Reliability.tsx";
 import { Placeholder } from "./pages/Placeholder.tsx";
 
 export function App() {
@@ -34,6 +35,7 @@ export function App() {
           <Route path="/teams/:team" element={<TeamDetail />} />
           <Route path="/capabilities" element={<Capabilities />} />
           <Route path="/capabilities/plugins/:name" element={<PluginDetail />} />
+          <Route path="/reliability" element={<Reliability />} />
           <Route path="*" element={<Placeholder title="Not found" phase={0} />} />
         </Routes>
       </main>

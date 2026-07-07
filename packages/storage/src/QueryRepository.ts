@@ -82,6 +82,23 @@ export interface ToolDetail {
   topUsers: { userHash: string; uses: number }[];
 }
 
+// One row per tool for the Models & Tools index — the full list, no teaser cap.
+// tool_result aggregates (uses/success/latency/users) merged in TS with
+// tool_decision counters (accept/reject/block). mcpServer is '' unless the
+// adapter split a mcp__<server>__<tool> name into dims['mcp_server'].
+export interface ToolsListRow {
+  tool: string;
+  mcpServer: string;
+  uses: number;
+  successRate: number;
+  avgMs: number;
+  p95Ms: number;
+  users: number;
+  accept: number;
+  reject: number;
+  block: number;
+}
+
 export interface AgentDetail {
   usesByDay: { day: string; uses: number; tokens: number }[];
   topUsers: { userHash: string; uses: number }[];
@@ -159,6 +176,44 @@ export interface CapabilitiesSummary {
   mcpServers: McpServerRow[];
   skills: { name: string; count: number }[];
   sessionStarts: { startType: string; count: number }[];
+  autonomy: AutonomySummary;
+}
+
+// Permission-mode posture (permission_mode_changed events): how autonomously the
+// org runs Claude Code and how often it switches modes.
+export interface AutonomySummary {
+  total: number; // total mode switches in range
+  byMode: { mode: string; count: number }[]; // destination mode distribution
+  transitions: { from: string; to: string; count: number }[];
+  byTrigger: { trigger: string; count: number }[];
+}
+
+// --- reliability (Phase 8). API errors / refusals / retries-exhausted /
+// internal errors. Error text is never surfaced — classify by status_code. ---
+export interface ReliabilitySummary {
+  totals: {
+    apiRequests: number;
+    apiErrors: number;
+    refusals: number;
+    retriesExhausted: number;
+    internalErrors: number;
+  };
+  errorsByDay: { day: string; requests: number; errors: number }[];
+  errorsByStatus: { status: string; count: number }[]; // http status_code bucket
+  errorsByModel: { model: string; errors: number }[];
+  refusalsByModel: { model: string; count: number }[];
+  topUsers: { userHash: string; errors: number }[];
+}
+
+// --- agents list (Phase 8). Full subagent table, richer than the overview
+// BarList. Keyed on the real CC agent.name attribute; empty until subagent
+// telemetry (gated behind OTEL_LOG_TOOL_DETAILS=1) accrues. ---
+export interface AgentsListRow {
+  agentType: string;
+  uses: number;
+  tokens: number;
+  toolUses: number;
+  users: number;
 }
 
 export interface PluginDetail {
@@ -178,6 +233,8 @@ export interface QueryRepository {
   personDetail(r: DateRange, userHash: string): Promise<PersonDetail>;
   /** One model's trend, token mix, top users, spend splits. */
   modelDetail(r: DateRange, model: string): Promise<ModelDetail>;
+  /** Full per-tool list for the Models & Tools index (no teaser cap; ceiling 500). */
+  toolsList(r: DateRange): Promise<ToolsListRow[]>;
   /** One tool's trend, latency, decisions, top users. */
   toolDetail(r: DateRange, tool: string): Promise<ToolDetail>;
   /** One subagent type's trend and top users. */
@@ -188,10 +245,14 @@ export interface QueryRepository {
   teams(r: DateRange): Promise<TeamRow[]>;
   /** One team's trend, members, model and tool mix. */
   teamDetail(r: DateRange, team: string): Promise<TeamDetail>;
-  /** Capability adoption: plugins, hooks, MCP, skills, session starts. */
+  /** Capability adoption: plugins, hooks, MCP, skills, session starts, autonomy. */
   capabilities(r: DateRange): Promise<CapabilitiesSummary>;
   /** One plugin's info, version spread, adopters, timeline. */
   pluginDetail(r: DateRange, name: string): Promise<PluginDetail>;
+  /** API reliability: errors / refusals / retries-exhausted / internal errors. */
+  reliability(r: DateRange): Promise<ReliabilitySummary>;
+  /** Full subagent-type table (uses, tokens, tool uses, users). */
+  agentsList(r: DateRange): Promise<AgentsListRow[]>;
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -275,7 +336,7 @@ export class ClickHouseQueryRepository implements QueryRepository {
 
     // Event-driven story blocks (tools, subagents, spend splits, when, adoption).
     const inEvent = (et: string) => `${eventsWhere} AND event_type = '${et}'`;
-    const [tools, toolDec, subagents, costByEffort, costByUser, activityByHour, skills, mcps, plugins] =
+    const [tools, toolDec, subagents, subagentTokens, costByEffort, costByUser, activityByHour, skills, mcps, plugins] =
       await Promise.all([
         this.ch.query<{ tool: string; uses: number; successRate: number; avgMs: number }>(
           `SELECT dims['tool_name'] AS tool, count() AS uses,
@@ -292,10 +353,19 @@ export class ClickHouseQueryRepository implements QueryRepository {
            GROUP BY tool ORDER BY accept + reject + block DESC LIMIT 20`,
           p,
         ),
-        this.ch.query<{ k: string; uses: number; tokens: number }>(
-          `SELECT dims['agent_type'] AS k, count() AS uses, sum(numbers['total_tokens']) AS tokens
-           FROM hg_events FINAL WHERE ${eventsWhere} AND mapContains(dims, 'agent_type')
+        // Subagents: real CC attributes runs to agent.name (api_request events); there
+        // is no agent_type / subagent_completed event. uses = event count per agent.name.
+        this.ch.query<{ k: string; uses: number }>(
+          `SELECT dims['agent.name'] AS k, count() AS uses
+           FROM hg_events FINAL WHERE ${eventsWhere} AND dims['agent.name'] != ''
            GROUP BY k ORDER BY uses DESC LIMIT 20`,
+          p,
+        ),
+        // Subagent tokens live on token.usage; agent.name is unpromoted, so it's in the
+        // attributes map. Merge into the events rows by agent.name in TS.
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT attributes['agent.name'] AS k, sum(value) AS v FROM hg_metrics FINAL
+           WHERE ${metricsWhere} AND name = 'token.usage' AND attributes['agent.name'] != '' GROUP BY k`,
           p,
         ),
         this.ch.query<{ k: string; v: number }>(
@@ -361,7 +431,10 @@ export class ClickHouseQueryRepository implements QueryRepository {
         reject: num(r.reject),
         block: num(r.block),
       })),
-      subagents: subagents.map((r) => ({ agentType: r.k || "(unknown)", uses: num(r.uses), tokens: num(r.tokens) })),
+      subagents: (() => {
+        const tok = new Map(subagentTokens.map((s) => [s.k, num(s.v)]));
+        return subagents.map((r) => ({ agentType: r.k || "(unknown)", uses: num(r.uses), tokens: tok.get(r.k) ?? 0 }));
+      })(),
       costByEffort: costByEffort.map((r) => ({ effort: r.k || "(none)", cost: num(r.v) })),
       costByUser: costByUser.map((r) => ({ userHash: r.k, cost: num(r.v) })),
       activityByHour: activityByHour.map((r) => ({ hour: num(r.hour), requests: num(r.requests), cost: num(r.cost) })),
@@ -511,6 +584,59 @@ export class ClickHouseQueryRepository implements QueryRepository {
     };
   }
 
+  async toolsList(r: DateRange): Promise<ToolsListRow[]> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // tool_result carries usage/latency/success/mcp_server; tool_decision carries
+    // accept/reject/block. Aggregate each side, merge by tool in TS (people() pattern).
+    const [resultRows, decRows] = await Promise.all([
+      this.ch.query<{ tool: string; mcpServer: string; uses: number; successRate: number; avgMs: number; p95Ms: number; users: number }>(
+        `SELECT dims['tool_name'] AS tool, any(dims['mcp_server']) AS mcpServer, count() AS uses,
+                countIf(dims['success'] = 'true') / count() AS successRate,
+                avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgMs,
+                quantileIf(0.95)(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS p95Ms,
+                uniqExact(user_hash) AS users
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'tool_result' AND dims['tool_name'] != ''
+         GROUP BY tool ORDER BY uses DESC LIMIT 500`,
+        p,
+      ),
+      this.ch.query<{ tool: string; accept: number; reject: number; block: number }>(
+        `SELECT dims['tool_name'] AS tool, countIf(dims['decision'] = 'accept') AS accept,
+                countIf(dims['decision'] = 'reject') AS reject, countIf(dims['decision'] = 'block') AS block
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'tool_decision' AND dims['tool_name'] != ''
+         GROUP BY tool`,
+        p,
+      ),
+    ]);
+    const dec = new Map(decRows.map((d) => [d.tool, d]));
+    const seen = new Set<string>();
+    const rows: ToolsListRow[] = resultRows.map((t) => {
+      seen.add(t.tool);
+      const d = dec.get(t.tool);
+      return {
+        tool: t.tool || "(unknown)",
+        mcpServer: t.mcpServer || "",
+        uses: num(t.uses),
+        successRate: num(t.successRate),
+        avgMs: num(t.avgMs),
+        p95Ms: num(t.p95Ms),
+        users: num(t.users),
+        accept: num(d?.accept),
+        reject: num(d?.reject),
+        block: num(d?.block),
+      };
+    });
+    // Tools seen only in decisions (approved/blocked but no tool_result) still appear.
+    for (const d of decRows) {
+      if (seen.has(d.tool)) continue;
+      rows.push({
+        tool: d.tool || "(unknown)", mcpServer: "", uses: 0, successRate: 0, avgMs: 0, p95Ms: 0, users: 0,
+        accept: num(d.accept), reject: num(d.reject), block: num(d.block),
+      });
+    }
+    return rows.sort((a, b) => b.uses - a.uses).slice(0, 500);
+  }
+
   async toolDetail(r: DateRange, tool: string): Promise<ToolDetail> {
     // tool is bound ({t:String}) into the dims map lookup — never interpolated.
     const p = { org: r.org, from: r.from, to: r.to, t: tool };
@@ -551,24 +677,35 @@ export class ClickHouseQueryRepository implements QueryRepository {
   }
 
   async agentDetail(r: DateRange, agentType: string): Promise<AgentDetail> {
-    // agentType is bound ({a:String}) into the dims map lookup — never interpolated.
+    // agentType is the real CC agent.name attribute, bound ({a:String}) into the map
+    // lookup — never interpolated. It's dims['agent.name'] on events, attributes['agent.name']
+    // (unpromoted) on token.usage metrics.
     const p = { org: r.org, from: r.from, to: r.to, a: agentType };
-    const where =
-      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND mapContains(dims, 'agent_type') AND dims['agent_type'] = {a:String}";
-    const [usesByDay, topUsers] = await Promise.all([
-      this.ch.query<{ day: string; uses: number; tokens: number }>(
-        `SELECT toString(event_date) AS day, count() AS uses, sum(numbers['total_tokens']) AS tokens
-         FROM hg_events FINAL WHERE ${where} GROUP BY event_date ORDER BY event_date`,
+    const eventsWhere =
+      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND dims['agent.name'] = {a:String}";
+    const metricsWhere =
+      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND name = 'token.usage' AND attributes['agent.name'] = {a:String}";
+    const [usesByDay, tokensByDay, topUsers] = await Promise.all([
+      this.ch.query<{ day: string; uses: number }>(
+        `SELECT toString(event_date) AS day, count() AS uses
+         FROM hg_events FINAL WHERE ${eventsWhere} GROUP BY event_date ORDER BY event_date`,
+        p,
+      ),
+      // Tokens per day from the token.usage metric; merge into event days by day in TS.
+      this.ch.query<{ day: string; v: number }>(
+        `SELECT toString(event_date) AS day, sum(value) AS v
+         FROM hg_metrics FINAL WHERE ${metricsWhere} GROUP BY event_date ORDER BY event_date`,
         p,
       ),
       this.ch.query<{ k: string; uses: number }>(
         `SELECT user_hash AS k, count() AS uses FROM hg_events FINAL
-         WHERE ${where} GROUP BY k ORDER BY uses DESC LIMIT 10`,
+         WHERE ${eventsWhere} GROUP BY k ORDER BY uses DESC LIMIT 10`,
         p,
       ),
     ]);
+    const tok = new Map(tokensByDay.map((x) => [x.day, num(x.v)]));
     return {
-      usesByDay: usesByDay.map((x) => ({ day: x.day, uses: num(x.uses), tokens: num(x.tokens) })),
+      usesByDay: usesByDay.map((x) => ({ day: x.day, uses: num(x.uses), tokens: tok.get(x.day) ?? 0 })),
       topUsers: topUsers.map((x) => ({ userHash: x.k, uses: num(x.uses) })),
     };
   }
@@ -681,8 +818,20 @@ export class ClickHouseQueryRepository implements QueryRepository {
     // event_type literals are hardcoded (not user input).
     const inEvent = (et: string) => `${where} AND event_type = '${et}'`;
 
-    const [plugins, hooks, hooksBySource, mcp, mcpByTransport, mcpServers, skills, sessionStarts] =
-      await Promise.all([
+    const [
+      plugins,
+      hooks,
+      hooksBySource,
+      mcp,
+      mcpByTransport,
+      mcpServers,
+      skills,
+      sessionStarts,
+      autoTotal,
+      autoByMode,
+      autoTransitions,
+      autoByTrigger,
+    ] = await Promise.all([
         // Plugins: one row per plugin.name; flags fold has_hooks/has_mcp string dims to bool,
         // bundle counts read the per-install path counts.
         this.ch.query<{
@@ -773,6 +922,27 @@ export class ClickHouseQueryRepository implements QueryRepository {
            FROM hg_metrics FINAL WHERE ${where} AND name = 'session.count' GROUP BY k ORDER BY v DESC`,
           p,
         ),
+        // Autonomy: permission_mode_changed posture — total switches, destination-mode
+        // distribution, from→to transitions, and what triggered each switch.
+        this.ch.query<{ v: number }>(
+          `SELECT count() AS v FROM hg_events FINAL WHERE ${inEvent("permission_mode_changed")}`,
+          p,
+        ),
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT dims['to_mode'] AS k, count() AS v FROM hg_events FINAL
+           WHERE ${inEvent("permission_mode_changed")} GROUP BY k ORDER BY v DESC`,
+          p,
+        ),
+        this.ch.query<{ from: string; to: string; v: number }>(
+          `SELECT dims['from_mode'] AS from, dims['to_mode'] AS to, count() AS v FROM hg_events FINAL
+           WHERE ${inEvent("permission_mode_changed")} GROUP BY from, to ORDER BY v DESC`,
+          p,
+        ),
+        this.ch.query<{ k: string; v: number }>(
+          `SELECT dims['trigger'] AS k, count() AS v FROM hg_events FINAL
+           WHERE ${inEvent("permission_mode_changed")} GROUP BY k ORDER BY v DESC`,
+          p,
+        ),
       ]);
 
     return {
@@ -814,6 +984,12 @@ export class ClickHouseQueryRepository implements QueryRepository {
       })),
       skills: skills.map((x) => ({ name: x.k, count: num(x.v) })),
       sessionStarts: sessionStarts.map((x) => ({ startType: x.k || "(none)", count: num(x.v) })),
+      autonomy: {
+        total: num(autoTotal[0]?.v),
+        byMode: autoByMode.map((x) => ({ mode: x.k || "(none)", count: num(x.v) })),
+        transitions: autoTransitions.map((x) => ({ from: x.from || "(none)", to: x.to || "(none)", count: num(x.v) })),
+        byTrigger: autoByTrigger.map((x) => ({ trigger: x.k || "(none)", count: num(x.v) })),
+      },
     };
   }
 
@@ -889,6 +1065,111 @@ export class ClickHouseQueryRepository implements QueryRepository {
       byDay: byDay.map((x) => ({ day: x.day, events: num(x.v) })),
     };
   }
+
+  async reliability(r: DateRange): Promise<ReliabilitySummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // Classify errors by HTTP status_code only — dims['error'] free text is NEVER selected.
+    // status_code lives in the numbers map (mapContains guard); bucket by its integer string.
+    const statusBucket = "if(mapContains(numbers, 'status_code'), toString(toInt32(numbers['status_code'])), '(none)')";
+    const [totals, errorsByDay, errorsByStatus, errorsByModel, refusalsByModel, topUsers] =
+      await Promise.all([
+        this.ch.query<{
+          apiRequests: number;
+          apiErrors: number;
+          refusals: number;
+          retriesExhausted: number;
+          internalErrors: number;
+        }>(
+          `SELECT countIf(event_type = 'api_request') AS apiRequests,
+                  countIf(event_type = 'api_error') AS apiErrors,
+                  countIf(event_type = 'api_refusal') AS refusals,
+                  countIf(event_type = 'api_retries_exhausted') AS retriesExhausted,
+                  countIf(event_type = 'internal_error') AS internalErrors
+           FROM hg_events FINAL WHERE ${where}`,
+          p,
+        ),
+        this.ch.query<{ day: string; requests: number; errors: number }>(
+          `SELECT toString(event_date) AS day,
+                  countIf(event_type = 'api_request') AS requests,
+                  countIf(event_type = 'api_error') AS errors
+           FROM hg_events FINAL WHERE ${where} GROUP BY event_date ORDER BY event_date`,
+          p,
+        ),
+        this.ch.query<{ status: string; count: number }>(
+          `SELECT ${statusBucket} AS status, count() AS count
+           FROM hg_events FINAL WHERE ${where} AND event_type = 'api_error'
+           GROUP BY status ORDER BY count DESC`,
+          p,
+        ),
+        this.ch.query<{ model: string; errors: number }>(
+          `SELECT dims['model'] AS model, count() AS errors
+           FROM hg_events FINAL WHERE ${where} AND event_type = 'api_error'
+           GROUP BY model ORDER BY errors DESC`,
+          p,
+        ),
+        this.ch.query<{ model: string; count: number }>(
+          `SELECT dims['model'] AS model, count() AS count
+           FROM hg_events FINAL WHERE ${where} AND event_type = 'api_refusal'
+           GROUP BY model ORDER BY count DESC`,
+          p,
+        ),
+        this.ch.query<{ userHash: string; errors: number }>(
+          `SELECT user_hash AS userHash, count() AS errors
+           FROM hg_events FINAL WHERE ${where} AND event_type = 'api_error'
+           GROUP BY userHash ORDER BY errors DESC LIMIT 10`,
+          p,
+        ),
+      ]);
+    return {
+      totals: {
+        apiRequests: num(totals[0]?.apiRequests),
+        apiErrors: num(totals[0]?.apiErrors),
+        refusals: num(totals[0]?.refusals),
+        retriesExhausted: num(totals[0]?.retriesExhausted),
+        internalErrors: num(totals[0]?.internalErrors),
+      },
+      errorsByDay: errorsByDay.map((x) => ({ day: x.day, requests: num(x.requests), errors: num(x.errors) })),
+      errorsByStatus: errorsByStatus.map((x) => ({ status: x.status || "(none)", count: num(x.count) })),
+      errorsByModel: errorsByModel.map((x) => ({ model: x.model || "(unknown)", errors: num(x.errors) })),
+      refusalsByModel: refusalsByModel.map((x) => ({ model: x.model || "(unknown)", count: num(x.count) })),
+      topUsers: topUsers.map((x) => ({ userHash: x.userHash, errors: num(x.errors) })),
+    };
+  }
+
+  async agentsList(r: DateRange): Promise<AgentsListRow[]> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // Real CC attributes subagents via agent.name: uses/users from events (dims['agent.name']),
+    // tokens from the token.usage metric (attributes['agent.name'], unpromoted). Merge by agent.name.
+    const [eventRows, tokenRows] = await Promise.all([
+      this.ch.query<{ agentType: string; uses: number; users: number }>(
+        `SELECT dims['agent.name'] AS agentType, count() AS uses, uniqExact(user_hash) AS users
+         FROM hg_events FINAL
+         WHERE ${where} AND dims['agent.name'] != ''
+         GROUP BY agentType ORDER BY uses DESC LIMIT 200`,
+        p,
+      ),
+      this.ch.query<{ agentType: string; tokens: number }>(
+        `SELECT attributes['agent.name'] AS agentType, sum(value) AS tokens FROM hg_metrics FINAL
+         WHERE ${where} AND name = 'token.usage' AND attributes['agent.name'] != '' GROUP BY agentType`,
+        p,
+      ),
+    ]);
+    const tok = new Map(tokenRows.map((t) => [t.agentType, num(t.tokens)]));
+    return eventRows.map((x) => ({
+      agentType: x.agentType,
+      uses: num(x.uses),
+      tokens: tok.get(x.agentType) ?? 0,
+      // No real CC source: toolUses came from loadgen's total_tool_uses. 0 until CC exposes it.
+      toolUses: 0,
+      users: num(x.users),
+    }));
+  }
+}
+
+function emptyAutonomy(): AutonomySummary {
+  return { total: 0, byMode: [], transitions: [], byTrigger: [] };
 }
 
 function emptyCapabilities(): CapabilitiesSummary {
@@ -900,6 +1181,18 @@ function emptyCapabilities(): CapabilitiesSummary {
     mcpServers: [],
     skills: [],
     sessionStarts: [],
+    autonomy: emptyAutonomy(),
+  };
+}
+
+function emptyReliability(): ReliabilitySummary {
+  return {
+    totals: { apiRequests: 0, apiErrors: 0, refusals: 0, retriesExhausted: 0, internalErrors: 0 },
+    errorsByDay: [],
+    errorsByStatus: [],
+    errorsByModel: [],
+    refusalsByModel: [],
+    topUsers: [],
   };
 }
 
@@ -942,6 +1235,9 @@ export class InMemoryQueryRepository implements QueryRepository {
   async modelDetail(): Promise<ModelDetail> {
     return { costByDay: [], tokensByType: [], topUsers: [], costBySource: [], costByEffort: [] };
   }
+  async toolsList(): Promise<ToolsListRow[]> {
+    return [];
+  }
   async toolDetail(): Promise<ToolDetail> {
     return { usesByDay: [], latency: { avgMs: 0, p95Ms: 0 }, decisions: { accept: 0, reject: 0, block: 0 }, topUsers: [] };
   }
@@ -959,6 +1255,12 @@ export class InMemoryQueryRepository implements QueryRepository {
   }
   async capabilities(): Promise<CapabilitiesSummary> {
     return emptyCapabilities();
+  }
+  async reliability(): Promise<ReliabilitySummary> {
+    return emptyReliability();
+  }
+  async agentsList(): Promise<AgentsListRow[]> {
+    return [];
   }
   async pluginDetail(): Promise<PluginDetail> {
     return { info: null, versions: [], users: [], byDay: [] };
