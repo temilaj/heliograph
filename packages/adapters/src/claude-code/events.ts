@@ -27,6 +27,12 @@ const EVENT_TYPE_BY_NAME: Record<string, EventType> = {
   compaction: "compaction",
   internal_error: "internal_error",
   feedback_survey: "feedback_survey",
+  // `api_request_body`/`api_response_body` (raw-body dumps, gated behind
+  // OTEL_LOG_RAW_API_BODIES) are deliberately absent: the domain EventType union
+  // has no fitting member, and mapping a response body onto `api_request` would
+  // conflate distinct events and inflate request counts. They fall through to
+  // "unknown" (event.name preserved in dims); their `body`/`body_ref` content is
+  // always dropped via CONTENT_KEYS, so no raw body ever leaks into dims/numbers.
 };
 
 const VENDOR_PREFIX = "claude_code.";
@@ -45,14 +51,21 @@ export function toEventType(eventName: string | undefined): EventType {
  * grep patterns) and `error` (free-text error messages) are the OTEL_LOG_TOOL_DETAILS
  * fields; only the free-text `error` string is dropped — structured
  * `error_type`/`status_code`/`error_code`/`error_category` still flow as dims/numbers.
+ * `body` (inline raw request/response JSON, truncated ~60KB) and `body_ref` (a
+ * file-path reference to the untruncated body on disk) are the real raw-body
+ * content keys — the OTEL_LOG_RAW_API_BODIES fields on
+ * `api_request_body`/`api_response_body`. (There is no `raw_api_body` attribute;
+ * that was a name Claude Code never emits.) The structured
+ * `body_length`/`body_truncated` (numbers) still flow safely.
  */
 export const CONTENT_KEYS = new Set([
   "prompt",
   "response",
   "tool_parameters",
-  "raw_api_body",
   "tool_input",
   "error",
+  "body",
+  "body_ref",
 ]);
 
 /** Attribute keys the adapter consumes directly, so excluded from numbers/dims. */

@@ -172,6 +172,9 @@ export interface CapabilitiesSummary {
     avgConnectMs: number;
     pluginProvided: number;
     byTransport: { transport: string; count: number }[];
+    // Connected servers by name (from mcp_server_connection events); distinct from
+    // mcpServers below, which is per-server tool-CALL usage.
+    servers: { server: string; connections: number; avgConnectMs: number }[];
   };
   mcpServers: McpServerRow[];
   skills: { name: string; count: number }[];
@@ -223,6 +226,15 @@ export interface PluginDetail {
   byDay: { day: string; events: number }[];
 }
 
+// --- environment (Phase 9). Claude Code version + entrypoint adoption, read off
+// the hg_metrics app_version / entrypoint LowCardinality columns. entrypoint is
+// empty until OTEL_METRICS_INCLUDE_ENTRYPOINT is enabled — the query returns
+// cleanly empty, the UI shows an honest empty state. ---
+export interface EnvironmentSummary {
+  versions: { version: string; users: number; sessions: number }[];
+  entrypoints: { entrypoint: string; users: number; sessions: number }[];
+}
+
 export interface QueryRepository {
   /** Distinct orgs we've received telemetry from, most-recent first. */
   orgs(): Promise<OrgInfo[]>;
@@ -253,6 +265,8 @@ export interface QueryRepository {
   reliability(r: DateRange): Promise<ReliabilitySummary>;
   /** Full subagent-type table (uses, tokens, tool uses, users). */
   agentsList(r: DateRange): Promise<AgentsListRow[]>;
+  /** Claude Code version + entrypoint adoption (app_version / entrypoint columns). */
+  environment(r: DateRange): Promise<EnvironmentSummary>;
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -824,6 +838,7 @@ export class ClickHouseQueryRepository implements QueryRepository {
       hooksBySource,
       mcp,
       mcpByTransport,
+      mcpServersByName,
       mcpServers,
       skills,
       sessionStarts,
@@ -902,6 +917,14 @@ export class ClickHouseQueryRepository implements QueryRepository {
            FROM hg_events FINAL WHERE ${inEvent("mcp_server_connection")} GROUP BY k ORDER BY v DESC`,
           p,
         ),
+        // Connected servers by NAME (server_name accrues once OTEL_LOG_TOOL_DETAILS is on).
+        this.ch.query<{ server: string; connections: number; avgConnectMs: number }>(
+          `SELECT dims['server_name'] AS server, count() AS connections,
+                  avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgConnectMs
+           FROM hg_events FINAL WHERE ${inEvent("mcp_server_connection")} AND dims['server_name'] != ''
+           GROUP BY server ORDER BY connections DESC LIMIT 20`,
+          p,
+        ),
         // Per-server MCP usage from the mcp_server dim the adapter splits off tool names.
         this.ch.query<{ server: string; calls: number; successRate: number; avgMs: number }>(
           `SELECT dims['mcp_server'] AS server, count() AS calls,
@@ -975,6 +998,11 @@ export class ClickHouseQueryRepository implements QueryRepository {
         avgConnectMs: num(mcp[0]?.avgConnectMs),
         pluginProvided: num(mcp[0]?.pluginProvided),
         byTransport: mcpByTransport.map((x) => ({ transport: x.k || "(none)", count: num(x.v) })),
+        servers: mcpServersByName.map((x) => ({
+          server: x.server,
+          connections: num(x.connections),
+          avgConnectMs: num(x.avgConnectMs),
+        })),
       },
       mcpServers: mcpServers.map((x) => ({
         server: x.server,
@@ -1166,6 +1194,31 @@ export class ClickHouseQueryRepository implements QueryRepository {
       users: num(x.users),
     }));
   }
+
+  async environment(r: DateRange): Promise<EnvironmentSummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // Version + entrypoint live on hg_metrics LowCardinality columns. entrypoint is
+    // empty until OTEL_METRICS_INCLUDE_ENTRYPOINT is on — that just yields no rows.
+    const [versions, entrypoints] = await Promise.all([
+      this.ch.query<{ k: string; users: number; sessions: number }>(
+        `SELECT app_version AS k, uniqExact(user_hash) AS users, uniqExact(session_id) AS sessions
+         FROM hg_metrics FINAL WHERE ${where} AND app_version != ''
+         GROUP BY k ORDER BY users DESC`,
+        p,
+      ),
+      this.ch.query<{ k: string; users: number; sessions: number }>(
+        `SELECT entrypoint AS k, uniqExact(user_hash) AS users, uniqExact(session_id) AS sessions
+         FROM hg_metrics FINAL WHERE ${where} AND entrypoint != ''
+         GROUP BY k ORDER BY users DESC`,
+        p,
+      ),
+    ]);
+    return {
+      versions: versions.map((x) => ({ version: x.k || "(unknown)", users: num(x.users), sessions: num(x.sessions) })),
+      entrypoints: entrypoints.map((x) => ({ entrypoint: x.k || "(unknown)", users: num(x.users), sessions: num(x.sessions) })),
+    };
+  }
 }
 
 function emptyAutonomy(): AutonomySummary {
@@ -1177,7 +1230,7 @@ function emptyCapabilities(): CapabilitiesSummary {
     plugins: [],
     hooks: [],
     hooksBySource: [],
-    mcp: { connections: 0, avgConnectMs: 0, pluginProvided: 0, byTransport: [] },
+    mcp: { connections: 0, avgConnectMs: 0, pluginProvided: 0, byTransport: [], servers: [] },
     mcpServers: [],
     skills: [],
     sessionStarts: [],
@@ -1264,5 +1317,8 @@ export class InMemoryQueryRepository implements QueryRepository {
   }
   async pluginDetail(): Promise<PluginDetail> {
     return { info: null, versions: [], users: [], byDay: [] };
+  }
+  async environment(): Promise<EnvironmentSummary> {
+    return { versions: [], entrypoints: [] };
   }
 }

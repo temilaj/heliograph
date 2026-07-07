@@ -1,6 +1,4 @@
-// OTLP/gRPC receiver (:4317) — lets an unmodified Claude Code export without
-// forcing http/json. proto-loader decodes protobuf into the same shape as
-// OTLP/JSON, so the request feeds straight into the existing pipelines. See docs/ARCHITECTURE.md.
+// OTLP/gRPC receiver (:4317).
 import * as grpc from "@grpc/grpc-js";
 import protoLoader from "@grpc/proto-loader";
 import {
@@ -11,7 +9,7 @@ import {
 import type { Logger } from "@heliograph/observability";
 import { SaturatedError, type IngestResult } from "./pipeline.ts";
 
-// camelCase + longs-as-strings makes the decoded object structurally match OTLP/JSON.
+// camelCase + longs-as-strings => decoded shape matches OTLP/JSON (reuses the JSON decoders).
 const LOAD_OPTS: protoLoader.Options = {
   keepCase: false,
   longs: String,
@@ -33,7 +31,7 @@ export interface OtlpGrpcHandle {
   shutdown: () => Promise<void>;
 }
 
-/** Bind the OTLP gRPC server. Resolves once listening (bindAsync auto-starts in grpc-js ≥1.10). */
+/** Bind the OTLP gRPC server; resolves once listening. */
 export function startOtlpGrpcServer(deps: GrpcIngestDeps, port: number): Promise<OtlpGrpcHandle> {
   const server = new grpc.Server();
   const metrics = loadService(OTLP_METRICS_SERVICE_PROTO, "metrics");
@@ -68,7 +66,7 @@ function makeExport(
     ingest(call.request)
       .then((result) => {
         deps.log.info(`grpc ${label} ingested`, { accepted: result.accepted });
-        callback(null, {}); // empty ExportServiceResponse == full success
+        callback(null, {}); // empty response = full success
       })
       .catch((err) => {
         if (err instanceof SaturatedError) {
@@ -81,7 +79,6 @@ function makeExport(
   };
 }
 
-// The two collector services share nested package path opentelemetry.proto.collector.<sig>.v1.
 function loadService(protoFile: string, signal: "metrics" | "logs"): grpc.ServiceDefinition {
   const def = protoLoader.loadSync(protoFile, LOAD_OPTS);
   const pkg = grpc.loadPackageDefinition(def) as unknown as Record<string, any>;

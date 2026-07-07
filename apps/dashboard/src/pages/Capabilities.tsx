@@ -203,6 +203,15 @@ export function Capabilities() {
     value: r.count,
     valueText: int(r.count),
   }));
+  // Connected servers by name (from mcp_server_connection events). Guard against
+  // a stale API shape (older field-less response) so the page never hard-crashes.
+  const mcpServersConnected: BarRow[] = (c.mcp.servers ?? []).map((r) => ({
+    key: r.server,
+    label: r.server,
+    value: r.connections,
+    valueText: `${int(r.connections)} conns`,
+    title: `${r.server}: ${int(r.connections)} connections · ${num(r.avgConnectMs)}ms avg connect`,
+  }));
   const mcpByServer: BarRow[] = c.mcpServers.map((r) => ({
     key: r.server,
     label: r.server,
@@ -320,17 +329,25 @@ export function Capabilities() {
 
       <Section title="MCP servers">
         <StatStrip stats={mcpStrip} />
-        <Grid cols={2}>
+        <Grid cols={3}>
+          <Card>
+            <CardHeader title="Connected servers" sub="connections · latency" />
+            {mcpServersConnected.length ? (
+              <BarList rows={mcpServersConnected} search={search} />
+            ) : (
+              <Empty text="No connected MCP servers in range." />
+            )}
+          </Card>
           <Card>
             <CardHeader title="By transport" />
             <BarList rows={mcpByTransport} search={search} />
           </Card>
           <Card>
-            <CardHeader title="By server" sub="calls · success · latency" />
+            <CardHeader title="Tool-call usage" sub="calls · success · latency" />
             {mcpByServer.length ? (
               <BarList rows={mcpByServer} search={search} />
             ) : (
-              <Empty text="Per-server data accrues from new telemetry." />
+              <Empty text="No MCP tool calls in range." />
             )}
           </Card>
         </Grid>
