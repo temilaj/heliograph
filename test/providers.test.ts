@@ -1,5 +1,3 @@
-// Proves the provider factories return working implementations behind the
-// interfaces, and that the full pipeline runs through them (memory providers).
 import { expect, test, describe } from "bun:test";
 import { makeQueueProvider } from "@heliograph/queue";
 import { makeStorageProvider as makeStore, InMemoryStorageProvider } from "@heliograph/storage";
@@ -37,7 +35,7 @@ describe("provider factories", () => {
     const sink = storage.metricSink();
     await queue.consumer("g", ["canonical.metrics"]).run((b) => handleMetricBatch(b, sink).then(() => {}));
 
-    expect((storage as InMemoryStorageProvider).sink.written.length).toBe(8);
+    expect((storage as InMemoryStorageProvider).sink.written.length).toBe(14);
     expect(await storage.health()).toBe(true);
   });
 });

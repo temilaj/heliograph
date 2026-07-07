@@ -1,6 +1,3 @@
-// Phase 7 capability queries: in-memory conformance + proves the ClickHouse impl
-// BINDS the user-supplied plugin name (never string-interpolates it) and always
-// scopes every query by org + date range.
 import { expect, test, describe } from "bun:test";
 import {
   ClickHouseQueryRepository,
@@ -19,10 +16,11 @@ describe("in-memory capability conformance", () => {
       plugins: [],
       hooks: [],
       hooksBySource: [],
-      mcp: { connections: 0, avgConnectMs: 0, pluginProvided: 0, byTransport: [] },
+      mcp: { connections: 0, avgConnectMs: 0, pluginProvided: 0, byTransport: [], servers: [] },
       mcpServers: [],
       skills: [],
       sessionStarts: [],
+      autonomy: { total: 0, byMode: [], transitions: [], byTrigger: [] },
     });
   });
 
@@ -127,6 +125,20 @@ describe("ClickHouse capabilities maps rows", () => {
     expect(p.commands).toBe(2);
     expect(p.agents).toBe(1);
     expect(p.events).toBe(10);
+  });
+
+  test("maps connected MCP servers by name from mcp_server_connection events", async () => {
+    const client = {
+      async query(sql: string) {
+        if (sql.includes("event_type = 'mcp_server_connection'") && sql.includes("dims['server_name'] AS server")) {
+          return [{ server: "claude-design", connections: "6", avgConnectMs: "12.5" }] as never;
+        }
+        return [] as never;
+      },
+    };
+    const repo = new ClickHouseQueryRepository(client as unknown as ClickHouseClient);
+    const caps = await repo.capabilities(range);
+    expect(caps.mcp.servers).toEqual([{ server: "claude-design", connections: 6, avgConnectMs: 12.5 }]);
   });
 
   test("pluginDetail: info null when the plugin has zero events in range", async () => {
