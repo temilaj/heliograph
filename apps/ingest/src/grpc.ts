@@ -2,6 +2,7 @@
 import * as grpc from "@grpc/grpc-js";
 import protoLoader from "@grpc/proto-loader";
 import {
+  OtlpDecodeError,
   OTLP_LOGS_SERVICE_PROTO,
   OTLP_METRICS_SERVICE_PROTO,
   OTLP_PROTO_ROOT,
@@ -73,8 +74,15 @@ function makeExport(
           callback({ code: grpc.status.RESOURCE_EXHAUSTED, message: "saturated" });
           return;
         }
+        if (err instanceof OtlpDecodeError) {
+          // Client fault: malformed payload — not retryable.
+          deps.log.warn(`grpc ${label} decode error`, { err: String(err) });
+          callback({ code: grpc.status.INVALID_ARGUMENT, message: String(err) });
+          return;
+        }
+        // Backend/transient fault (e.g. produce failure) — retryable.
         deps.log.error(`grpc ${label} ingest error`, { err: String(err) });
-        callback({ code: grpc.status.INVALID_ARGUMENT, message: String(err) });
+        callback({ code: grpc.status.UNAVAILABLE, message: "ingest unavailable" });
       });
   };
 }

@@ -5,6 +5,7 @@ import {
   type HealthState,
 } from "@heliograph/observability";
 import { AdapterRegistry, ClaudeCodeAdapter } from "@heliograph/adapters";
+import { OtlpDecodeError } from "@heliograph/otlp";
 
 import { Enricher, createIdentityHasher } from "@heliograph/enrichment";
 import { makeQueueProvider } from "@heliograph/queue";
@@ -89,7 +90,7 @@ async function handleOtlp(
   label: string,
 ): Promise<Response> {
   const ct = req.headers.get("content-type") ?? "";
-  // accepts OTLP/JSON for now. ; protobuf + gRPC later.
+  // HTTP path is OTLP/JSON only; protobuf/gRPC clients use :4317.
   if (!ct.includes("application/json")) {
     return json(415, { message: "only application/json (OTLP/JSON) supported" });
   }
@@ -100,8 +101,14 @@ async function handleOtlp(
     return json(200, { partialSuccess: {} });
   } catch (err) {
     if (err instanceof SaturatedError) return json(429, { message: "saturated" });
+    // Malformed payload (bad JSON or OTLP shape) is a client fault, not retryable.
+    if (err instanceof SyntaxError || err instanceof OtlpDecodeError) {
+      log.warn(`${label} decode error`, { err: String(err) });
+      return json(400, { message: String(err) });
+    }
+    // Backend/transient fault (e.g. produce failure) — signal retryable.
     log.error(`${label} ingest error`, { err: String(err) });
-    return json(400, { message: String(err) });
+    return json(503, { message: "ingest unavailable" });
   }
 }
 
