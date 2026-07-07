@@ -11,9 +11,11 @@ import { makeQueueProvider } from "@heliograph/queue";
 import { kafkaEnv, identityPepper, queueProviderName } from "@heliograph/config";
 import { MetricsIngestPipeline, SaturatedError, type IngestResult } from "./pipeline.ts";
 import { EventsIngestPipeline } from "./events-pipeline.ts";
+import { startOtlpGrpcServer, type OtlpGrpcHandle } from "./grpc.ts";
 
 const log = createLogger({ service: "ingest" });
 const httpPort = Number(process.env.INGEST_HTTP_PORT ?? 4318);
+const grpcPort = Number(process.env.INGEST_GRPC_PORT ?? 4317);
 
 const kafka = kafkaEnv();
 const queue = makeQueueProvider({
@@ -46,6 +48,23 @@ await queue
   .catch((e) => log.error("queue init failed", { err: String(e) }));
 
 const health: HealthState = { live: () => true, ready: () => ready };
+
+// OTLP/gRPC receiver (:4317), same pipelines as HTTP.
+let grpcHandle: OtlpGrpcHandle | undefined;
+await startOtlpGrpcServer(
+  {
+    ingestMetrics: (b) => metricsPipeline.ingestJson(b),
+    ingestEvents: (b) => eventsPipeline.ingestJson(b),
+    isReady: () => ready,
+    log,
+  },
+  grpcPort,
+)
+  .then((h) => {
+    grpcHandle = h;
+    log.info("ingest grpc listening", { port: h.port });
+  })
+  .catch((e) => log.error("grpc bind failed", { err: String(e) }));
 
 const server = Bun.serve({
   port: httpPort,
@@ -103,6 +122,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     log.info("shutting down", { signal: sig });
     server.stop();
+    await grpcHandle?.shutdown();
     await queue.close();
     process.exit(0);
   });

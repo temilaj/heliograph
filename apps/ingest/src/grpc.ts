@@ -1,0 +1,90 @@
+// OTLP/gRPC receiver (:4317) — lets an unmodified Claude Code export without
+// forcing http/json. proto-loader decodes protobuf into the same shape as
+// OTLP/JSON, so the request feeds straight into the existing pipelines. See docs/ARCHITECTURE.md.
+import * as grpc from "@grpc/grpc-js";
+import protoLoader from "@grpc/proto-loader";
+import {
+  OTLP_LOGS_SERVICE_PROTO,
+  OTLP_METRICS_SERVICE_PROTO,
+  OTLP_PROTO_ROOT,
+} from "@heliograph/otlp";
+import type { Logger } from "@heliograph/observability";
+import { SaturatedError, type IngestResult } from "./pipeline.ts";
+
+// camelCase + longs-as-strings makes the decoded object structurally match OTLP/JSON.
+const LOAD_OPTS: protoLoader.Options = {
+  keepCase: false,
+  longs: String,
+  enums: String,
+  defaults: false,
+  oneofs: true,
+  includeDirs: [OTLP_PROTO_ROOT],
+};
+
+export interface GrpcIngestDeps {
+  ingestMetrics: (body: unknown) => Promise<IngestResult>;
+  ingestEvents: (body: unknown) => Promise<IngestResult>;
+  isReady: () => boolean;
+  log: Logger;
+}
+
+export interface OtlpGrpcHandle {
+  port: number;
+  shutdown: () => Promise<void>;
+}
+
+/** Bind the OTLP gRPC server. Resolves once listening (bindAsync auto-starts in grpc-js ≥1.10). */
+export function startOtlpGrpcServer(deps: GrpcIngestDeps, port: number): Promise<OtlpGrpcHandle> {
+  const server = new grpc.Server();
+  const metrics = loadService(OTLP_METRICS_SERVICE_PROTO, "metrics");
+  const logs = loadService(OTLP_LOGS_SERVICE_PROTO, "logs");
+
+  server.addService(metrics, { Export: makeExport(deps.ingestMetrics, "metrics", deps) });
+  server.addService(logs, { Export: makeExport(deps.ingestEvents, "events", deps) });
+
+  return new Promise((resolve, reject) => {
+    server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (err, boundPort) => {
+      if (err) return reject(err);
+      resolve({
+        port: boundPort,
+        shutdown: () => new Promise<void>((res) => server.tryShutdown(() => res())),
+      });
+    });
+  });
+}
+
+type UnaryHandler = grpc.handleUnaryCall<{ [k: string]: unknown }, Record<string, never>>;
+
+function makeExport(
+  ingest: (body: unknown) => Promise<IngestResult>,
+  label: string,
+  deps: GrpcIngestDeps,
+): UnaryHandler {
+  return (call, callback) => {
+    if (!deps.isReady()) {
+      callback({ code: grpc.status.UNAVAILABLE, message: "not ready" });
+      return;
+    }
+    ingest(call.request)
+      .then((result) => {
+        deps.log.info(`grpc ${label} ingested`, { accepted: result.accepted });
+        callback(null, {}); // empty ExportServiceResponse == full success
+      })
+      .catch((err) => {
+        if (err instanceof SaturatedError) {
+          callback({ code: grpc.status.RESOURCE_EXHAUSTED, message: "saturated" });
+          return;
+        }
+        deps.log.error(`grpc ${label} ingest error`, { err: String(err) });
+        callback({ code: grpc.status.INVALID_ARGUMENT, message: String(err) });
+      });
+  };
+}
+
+// The two collector services share nested package path opentelemetry.proto.collector.<sig>.v1.
+function loadService(protoFile: string, signal: "metrics" | "logs"): grpc.ServiceDefinition {
+  const def = protoLoader.loadSync(protoFile, LOAD_OPTS);
+  const pkg = grpc.loadPackageDefinition(def) as unknown as Record<string, any>;
+  const svcName = signal === "metrics" ? "MetricsService" : "LogsService";
+  return pkg.opentelemetry.proto.collector[signal].v1[svcName].service;
+}

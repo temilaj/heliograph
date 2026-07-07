@@ -5,8 +5,13 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useFilters } from "../lib/filters.tsx";
-import { fetchCapabilities } from "../lib/api.ts";
-import type { CapabilitiesSummary, PluginRow, HookEventRow } from "@heliograph/storage";
+import { fetchCapabilities, fetchEnvironment } from "../lib/api.ts";
+import type {
+  CapabilitiesSummary,
+  EnvironmentSummary,
+  PluginRow,
+  HookEventRow,
+} from "@heliograph/storage";
 import { int, num, pct } from "../lib/format.ts";
 import {
   Card,
@@ -30,6 +35,7 @@ export function Capabilities() {
   const { org, from, to } = useFilters();
   const { search } = useLocation();
   const [caps, setCaps] = useState<CapabilitiesSummary | null>(null);
+  const [env, setEnv] = useState<EnvironmentSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,8 +44,12 @@ export function Capabilities() {
     let live = true;
     setLoading(true);
     setError(null);
-    fetchCapabilities(org, from, to)
-      .then((c) => live && setCaps(c))
+    Promise.all([fetchCapabilities(org, from, to), fetchEnvironment(org, from, to)])
+      .then(([c, e]) => {
+        if (!live) return;
+        setCaps(c);
+        setEnv(e);
+      })
       .catch((e) => live && setError(String(e instanceof Error ? e.message : e)))
       .finally(() => live && setLoading(false));
     return () => {
@@ -58,6 +68,22 @@ export function Capabilities() {
   if (!caps) return <EmptyPage title="Loading…" />;
 
   const c = caps;
+
+  // --- Environment (Claude Code version + entrypoint adoption) ---
+  const versions: BarRow[] = (env?.versions ?? []).map((r) => ({
+    key: r.version,
+    label: r.version,
+    value: r.users,
+    valueText: `${int(r.users)} users`,
+    title: `${int(r.users)} users · ${int(r.sessions)} sessions`,
+  }));
+  const entrypoints: BarRow[] = (env?.entrypoints ?? []).map((r) => ({
+    key: r.entrypoint,
+    label: r.entrypoint,
+    value: r.users,
+    valueText: `${int(r.users)} users`,
+    title: `${int(r.users)} users · ${int(r.sessions)} sessions`,
+  }));
 
   // --- Plugins ---
   const withHooks = c.plugins.filter((p) => p.hasHooks).length;
@@ -236,6 +262,27 @@ export function Capabilities() {
   return (
     <div className="loading-dim" style={{ opacity: loading ? 0.6 : 1 }}>
       <PageHeader title="Capabilities" meta="Plugins, hooks, MCP and skills across the selected range" />
+
+      <Section title="Environment">
+        <Grid cols={2}>
+          <Card>
+            <CardHeader title="Claude Code version" sub="users · sessions" />
+            {versions.length ? (
+              <BarList rows={versions} search={search} />
+            ) : (
+              <Empty text="No version data in range" />
+            )}
+          </Card>
+          <Card>
+            <CardHeader title="Entrypoint" sub="users · sessions" />
+            {entrypoints.length ? (
+              <BarList rows={entrypoints} search={search} />
+            ) : (
+              <Empty text="No entrypoint data — enable OTEL_METRICS_INCLUDE_ENTRYPOINT" />
+            )}
+          </Card>
+        </Grid>
+      </Section>
 
       <Section title="Plugins">
         <StatStrip stats={pluginStrip} />

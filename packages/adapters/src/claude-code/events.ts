@@ -39,8 +39,21 @@ export function toEventType(eventName: string | undefined): EventType {
   return EVENT_TYPE_BY_NAME[bare] ?? "unknown";
 }
 
-/** Attribute keys carrying free-text content — routed to redaction, never dims. */
-export const CONTENT_KEYS = new Set(["prompt", "response", "tool_parameters", "raw_api_body"]);
+/**
+ * Attribute keys carrying free-text content — routed to redaction, never dims.
+ * `tool_input` (actual tool args: bash commands, file-write contents, paths,
+ * grep patterns) and `error` (free-text error messages) are the OTEL_LOG_TOOL_DETAILS
+ * fields; only the free-text `error` string is dropped — structured
+ * `error_type`/`status_code`/`error_code`/`error_category` still flow as dims/numbers.
+ */
+export const CONTENT_KEYS = new Set([
+  "prompt",
+  "response",
+  "tool_parameters",
+  "raw_api_body",
+  "tool_input",
+  "error",
+]);
 
 /** Attribute keys the adapter consumes directly, so excluded from numbers/dims. */
 export const CONSUMED_EVENT_KEYS = new Set(["event.name", "name", "prompt.id"]);

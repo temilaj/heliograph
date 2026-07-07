@@ -5,6 +5,8 @@
   "type": "module",
   "main": "src/main.ts",
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1",
     "@heliograph/domain": "workspace:*",
     "@heliograph/observability": "workspace:*",
     "@heliograph/otlp": "workspace:*",

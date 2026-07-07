@@ -77,10 +77,10 @@ const server = Bun.serve({
         return json(500, { message: "query failed" });
       }
     }
-    // Drill-down reads (Phase 2). The trailing path segment is decoded and bound
+    // Drill-down reads. The trailing path segment is decoded and bound
     // as a query parameter downstream — never interpolated into SQL.
     const drill = url.pathname.match(
-      /^\/v1\/(people|models|tools|agents|teams|capabilities|plugins|reliability|cost-timeseries)(?:\/([^/]+))?$/,
+      /^\/v1\/(people|models|tools|agents|teams|capabilities|plugins|reliability|environment|cost-timeseries)(?:\/([^/]+))?$/,
     );
     if (drill) {
       const org = orgFrom(req);
@@ -103,6 +103,8 @@ const server = Bun.serve({
             return json(200, id ? await queries.teamDetail(r, id) : await queries.teams(r));
           case "capabilities":
             return json(200, await queries.capabilities(r));
+          case "environment":
+            return json(200, await queries.environment(r));
           case "plugins":
             return id ? json(200, await queries.pluginDetail(r, id)) : json(400, { message: "missing plugin" });
           case "cost-timeseries":

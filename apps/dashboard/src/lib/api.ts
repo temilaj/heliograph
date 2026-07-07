@@ -16,6 +16,7 @@ import type {
   PluginDetail,
   ReliabilitySummary,
   AgentsListRow,
+  EnvironmentSummary,
 } from "@heliograph/storage";
 
 async function get<T>(path: string): Promise<T> {
@@ -83,6 +84,14 @@ export function fetchReliability(
   to: string,
 ): Promise<ReliabilitySummary> {
   return get<ReliabilitySummary>(`/v1/reliability?${range(org, from, to)}`);
+}
+
+export function fetchEnvironment(
+  org: string,
+  from: string,
+  to: string,
+): Promise<EnvironmentSummary> {
+  return get<EnvironmentSummary>(`/v1/environment?${range(org, from, to)}`);
 }
 
 export function fetchToolDetail(
