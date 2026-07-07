@@ -65,7 +65,7 @@ await startOtlpGrpcServer(
     grpcHandle = h;
     log.info("ingest grpc listening", { port: h.port });
   })
-  .catch((e) => log.error("grpc bind failed", { err: String(e) }));
+  .catch((e) => log.error("grpc server failed to start; HTTP ingest continues", { err: String(e) }));
 
 const server = Bun.serve({
   port: httpPort,

@@ -32,8 +32,13 @@ export interface OtlpGrpcHandle {
   shutdown: () => Promise<void>;
 }
 
+// async so a synchronous setup failure (proto load, new Server) rejects the
+// returned promise instead of throwing past main.ts's .catch and killing HTTP too.
 /** Bind the OTLP gRPC server; resolves once listening. */
-export function startOtlpGrpcServer(deps: GrpcIngestDeps, port: number): Promise<OtlpGrpcHandle> {
+export async function startOtlpGrpcServer(
+  deps: GrpcIngestDeps,
+  port: number,
+): Promise<OtlpGrpcHandle> {
   const server = new grpc.Server();
   const metrics = loadService(OTLP_METRICS_SERVICE_PROTO, "metrics");
   const logs = loadService(OTLP_LOGS_SERVICE_PROTO, "logs");
