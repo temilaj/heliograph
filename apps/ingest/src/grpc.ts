@@ -39,7 +39,8 @@ export async function startOtlpGrpcServer(
   deps: GrpcIngestDeps,
   port: number,
 ): Promise<OtlpGrpcHandle> {
-  const server = new grpc.Server();
+  // Default max receive is 4 MB; OTLP batches from a busy fleet/collector exceed it.
+  const server = new grpc.Server({ "grpc.max_receive_message_length": 32 * 1024 * 1024 });
   const metrics = loadService(OTLP_METRICS_SERVICE_PROTO, "metrics");
   const logs = loadService(OTLP_LOGS_SERVICE_PROTO, "logs");
 

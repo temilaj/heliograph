@@ -7,6 +7,7 @@ import dashboard from "@heliograph/dashboard/index.html";
 
 const log = createLogger({ service: "read-api" });
 const port = Number(process.env.READ_API_PORT ?? 8080);
+const MAX_IDENTITY_HASHES = 1000; // bounds the resolve IN-clause per request
 
 const storage = makeStorageProvider({ provider: storeProviderName(), clickhouse: clickhouseEnv() });
 const queries = storage.queryRepository();
@@ -70,6 +71,9 @@ const server = Bun.serve({
         const hashes = Array.isArray(body.hashes)
           ? body.hashes.filter((h): h is string => typeof h === "string")
           : [];
+        if (hashes.length > MAX_IDENTITY_HASHES) {
+          return json(400, { message: `too many hashes (max ${MAX_IDENTITY_HASHES})` });
+        }
         const resolved = await directory.resolve(org, hashes);
         return json(200, { identities: Object.fromEntries(resolved) });
       } catch (err) {
