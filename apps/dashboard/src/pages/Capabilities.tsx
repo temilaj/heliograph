@@ -199,6 +199,40 @@ export function Capabilities() {
     valueText: int(r.count),
   }));
 
+  // --- Autonomy (permission-mode posture) ---
+  const auto = c.autonomy;
+  const topMode = auto.byMode.length
+    ? [...auto.byMode].sort((a, b) => b.count - a.count)[0]
+    : null;
+  const autoStrip: StatItem[] = [
+    { label: "Mode switches", value: int(auto.total) },
+    {
+      label: "Top destination",
+      value: topMode ? topMode.mode : "—",
+      title: topMode ? `${int(topMode.count)} switches into ${topMode.mode}` : undefined,
+    },
+    { label: "Distinct modes", value: int(auto.byMode.length) },
+  ];
+  const autoByMode: BarRow[] = auto.byMode.map((r) => ({
+    key: r.mode,
+    label: r.mode,
+    value: r.count,
+    valueText: int(r.count),
+  }));
+  const autoByTrigger: BarRow[] = auto.byTrigger.map((r) => ({
+    key: r.trigger,
+    label: r.trigger,
+    value: r.count,
+    valueText: int(r.count),
+  }));
+  const autoTransitions: BarRow[] = auto.transitions.map((r) => ({
+    key: `${r.from}→${r.to}`,
+    label: `${r.from} → ${r.to}`,
+    value: r.count,
+    valueText: int(r.count),
+    title: `${r.from} → ${r.to}: ${int(r.count)} switches`,
+  }));
+
   return (
     <div className="loading-dim" style={{ opacity: loading ? 0.6 : 1 }}>
       <PageHeader title="Capabilities" meta="Plugins, hooks, MCP and skills across the selected range" />
@@ -271,6 +305,40 @@ export function Capabilities() {
           <CardHeader title="By start type" />
           <BarList rows={sessionStarts} search={search} />
         </Card>
+      </Section>
+
+      <Section title="Autonomy">
+        <StatStrip stats={autoStrip} />
+        {auto.total ? (
+          <>
+            <Grid cols={2}>
+              <Card>
+                <CardHeader title="Destination mode" sub="mode switched into" />
+                <BarList rows={autoByMode} search={search} />
+              </Card>
+              <Card>
+                <CardHeader title="Trigger" sub="what caused the switch" />
+                {autoByTrigger.length ? (
+                  <BarList rows={autoByTrigger} search={search} />
+                ) : (
+                  <Empty text="No trigger data in range" />
+                )}
+              </Card>
+            </Grid>
+            <Card>
+              <CardHeader title="Transitions" sub="from → to" />
+              {autoTransitions.length ? (
+                <BarList rows={autoTransitions} search={search} />
+              ) : (
+                <Empty text="No transition data in range" />
+              )}
+            </Card>
+          </>
+        ) : (
+          <Card>
+            <Empty text="No permission-mode changes in range — accrues as autonomy telemetry arrives" />
+          </Card>
+        )}
       </Section>
     </div>
   );

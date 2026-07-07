@@ -8,11 +8,14 @@ import type {
   PersonDetail,
   ModelDetail,
   ToolDetail,
+  ToolsListRow,
   AgentDetail,
   TeamRow,
   TeamDetail,
   CapabilitiesSummary,
   PluginDetail,
+  ReliabilitySummary,
+  AgentsListRow,
 } from "@heliograph/storage";
 
 async function get<T>(path: string): Promise<T> {
@@ -64,6 +67,22 @@ export function fetchModelDetail(
   model: string,
 ): Promise<ModelDetail> {
   return get<ModelDetail>(`/v1/models/${encodeURIComponent(model)}?${range(org, from, to)}`);
+}
+
+export function fetchToolsList(org: string, from: string, to: string): Promise<ToolsListRow[]> {
+  return get<ToolsListRow[]>(`/v1/tools?${range(org, from, to)}`);
+}
+
+export function fetchAgentsList(org: string, from: string, to: string): Promise<AgentsListRow[]> {
+  return get<AgentsListRow[]>(`/v1/agents?${range(org, from, to)}`);
+}
+
+export function fetchReliability(
+  org: string,
+  from: string,
+  to: string,
+): Promise<ReliabilitySummary> {
+  return get<ReliabilitySummary>(`/v1/reliability?${range(org, from, to)}`);
 }
 
 export function fetchToolDetail(
