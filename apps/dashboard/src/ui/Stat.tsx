@@ -1,7 +1,9 @@
 // Stats. StatHero = headline KPI card (label / big proportional figure / muted
 // sub-line). StatStrip = one card holding a row of compact secondary metrics —
 // use it instead of a wall of identical tiles so the page keeps hierarchy.
+// A `delta` renders a period-over-period ▲/▼ chip (see Delta.tsx).
 import { Card } from "./Card.tsx";
+import { Delta, type DeltaSpec } from "./Delta.tsx";
 
 export interface StatItem {
   label: string;
@@ -10,6 +12,8 @@ export interface StatItem {
   title?: string;
   /** Muted line under a hero value (e.g. "$1.82 per active user"). */
   sub?: string;
+  /** Period-over-period change vs the prior equal-length range. */
+  delta?: DeltaSpec | null;
 }
 
 export function StatHeroGrid({ stats }: { stats: StatItem[] }) {
@@ -20,8 +24,11 @@ export function StatHeroGrid({ stats }: { stats: StatItem[] }) {
           <div className="stat-label" title={s.title}>
             {s.label}
           </div>
-          <div className="stat-value" title={s.title}>
-            {s.value}
+          <div className="stat-value-row">
+            <div className="stat-value" title={s.title}>
+              {s.value}
+            </div>
+            {s.delta !== undefined && <Delta spec={s.delta} />}
           </div>
           {s.sub && <div className="stat-sub">{s.sub}</div>}
         </Card>
@@ -36,7 +43,10 @@ export function StatStrip({ stats }: { stats: StatItem[] }) {
       {stats.map((s) => (
         <div className="stat-strip-item" key={s.label} title={s.title}>
           <div className="stat-strip-label">{s.label}</div>
-          <div className="stat-strip-value">{s.value}</div>
+          <div className="stat-strip-value-row">
+            <div className="stat-strip-value">{s.value}</div>
+            {s.delta !== undefined && <Delta spec={s.delta} />}
+          </div>
         </div>
       ))}
     </Card>

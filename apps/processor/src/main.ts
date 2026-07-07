@@ -24,7 +24,7 @@ const storage = makeStorageProvider({ provider: storeProviderName(), clickhouse:
 const metricSink = storage.metricSink();
 const eventSink = storage.eventSink();
 const dlq = new PublisherDlq(queue.publisher(), kafka.topics.dlq);
-const consumer = queue.consumer("heliograph-processor", [kafka.topics.metrics, kafka.topics.events]);
+const consumer = queue.consumer(kafka.consumerGroup, [kafka.topics.metrics, kafka.topics.events]);
 
 let ready = false;
 const health: HealthState = { live: () => true, ready: () => ready && storage.health() };

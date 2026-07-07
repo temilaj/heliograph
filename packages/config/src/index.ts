@@ -3,6 +3,7 @@
 export interface KafkaEnv {
   brokers: string[];
   clientId: string;
+  consumerGroup: string;
   topics: { metrics: string; events: string; dlq: string };
 }
 
@@ -23,6 +24,7 @@ export function kafkaEnv(): KafkaEnv {
   return {
     brokers: req("KAFKA_BROKERS", "localhost:19092").split(",").map((s) => s.trim()),
     clientId: req("KAFKA_CLIENT_ID", "heliograph"),
+    consumerGroup: req("CONSUMER_GROUP", "heliograph-processor"),
     topics: {
       metrics: req("TOPIC_METRICS", "canonical.metrics"),
       events: req("TOPIC_EVENTS", "canonical.events"),
@@ -42,6 +44,11 @@ export function clickhouseEnv(): ClickHouseEnv {
 
 export function identityPepper(): string {
   return req("IDENTITY_PEPPER", "dev-only-change-me");
+}
+
+/** key for content envelope encryption; undefined → dev default. */
+export function contentMasterKey(): string | undefined {
+  return process.env.CONTENT_MASTER_KEY || undefined;
 }
 
 export function queueProviderName(): "kafka" | "memory" {

@@ -4,7 +4,7 @@
 // opacity. Drill-down links preserve the query string via useLocation().search.
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useFilters } from "../lib/filters.tsx";
+import { useFilters, priorRange } from "../lib/filters.tsx";
 import { fetchSummary, fetchCostTimeseries } from "../lib/api.ts";
 import type { OrgSummary, CostTimeseriesRow } from "@heliograph/storage";
 import { usd, int, num, compact, pct, truncHash } from "../lib/format.ts";
@@ -17,6 +17,7 @@ import {
   StatStrip,
   BarList,
   Empty,
+  toDelta,
   type StatItem,
   type BarRow,
 } from "../ui/index.ts";
@@ -29,6 +30,7 @@ export function Overview() {
   const { org, from, to } = useFilters();
   const { search } = useLocation();
   const [summary, setSummary] = useState<OrgSummary | null>(null);
+  const [prior, setPrior] = useState<OrgSummary | null>(null);
   const [trend, setTrend] = useState<CostTimeseriesRow[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,11 +40,18 @@ export function Overview() {
     let live = true;
     setLoading(true);
     setError(null);
-    Promise.all([fetchSummary(org, from, to), fetchCostTimeseries(org, from, to)])
-      .then(([s, t]) => {
+    // Prior equal-length window drives the period-over-period deltas.
+    const pr = priorRange(from, to);
+    Promise.all([
+      fetchSummary(org, from, to),
+      fetchCostTimeseries(org, from, to),
+      fetchSummary(org, pr.from, pr.to),
+    ])
+      .then(([s, t, p]) => {
         if (!live) return;
         setSummary(s);
         setTrend(t);
+        setPrior(p);
       })
       .catch((e) => live && setError(String(e instanceof Error ? e.message : e)))
       .finally(() => live && setLoading(false));
@@ -76,7 +85,7 @@ export function Overview() {
   }
 
   const s = summary;
-  const { heroes, strip } = kpis(s);
+  const { heroes, strip } = kpis(s, prior);
 
   // --- Spend breakdowns ---
   const costByModel: BarRow[] = s.cost.map((r) => ({
@@ -254,15 +263,26 @@ export function Overview() {
 }
 
 // 4 hero KPIs + the secondary strip, matching the old dashboard's derivations.
-function kpis(s: OrgSummary): { heroes: StatItem[]; strip: StatItem[] } {
-  const totalCost = s.cost.reduce((a, c) => a + c.cost, 0);
-  const totalTokens = s.tokens.reduce((a, t) => a + t.tokens, 0);
+// `prior` (equal-length preceding window) drives the period-over-period deltas.
+function kpis(s: OrgSummary, prior: OrgSummary | null): { heroes: StatItem[]; strip: StatItem[] } {
+  const sumCost = (x: OrgSummary) => x.cost.reduce((a, c) => a + c.cost, 0);
+  const sumTokens = (x: OrgSummary) => x.tokens.reduce((a, t) => a + t.tokens, 0);
+  const totalCost = sumCost(s);
+  const totalTokens = sumTokens(s);
   const totalLines = s.linesOfCode.reduce((a, x) => a + x.lines, 0);
   const toolUses = s.tools.reduce((a, t) => a + t.uses, 0);
   const subagentRuns = s.subagents.reduce((a, x) => a + x.uses, 0);
   const activeMin = s.activeTime.reduce((a, x) => a + x.seconds, 0) / 60;
   const users = s.adoption.activeUsers;
   const sessions = s.adoption.sessions;
+
+  // Deltas vs the prior window. Cost/tokens are neutral (more isn't inherently
+  // better without a denominator — drop the good/bad sense); adoption up is good.
+  const neutral = (d: ReturnType<typeof toDelta>) => (d ? { pct: d.pct } : null);
+  const dCost = prior ? neutral(toDelta(totalCost, sumCost(prior))) : null;
+  const dTokens = prior ? neutral(toDelta(totalTokens, sumTokens(prior))) : null;
+  const dUsers = prior ? toDelta(users, prior.adoption.activeUsers) : null;
+  const dSessions = prior ? toDelta(sessions, prior.adoption.sessions) : null;
 
   const edits = s.edits.accept + s.edits.reject;
   const acceptRate = edits ? (100 * s.edits.accept) / edits : null;
@@ -282,18 +302,21 @@ function kpis(s: OrgSummary): { heroes: StatItem[]; strip: StatItem[] } {
       label: "Cost",
       value: usd(totalCost),
       sub: users ? `${usd(totalCost / users)} per active user` : undefined,
+      delta: dCost,
     },
     {
       label: "Tokens",
       value: compact(totalTokens),
       sub: `${int(totalTokens)} total`,
       title: `${int(totalTokens)} tokens`,
+      delta: dTokens,
     },
-    { label: "Active users", value: int(users), sub: "in selected range" },
+    { label: "Active users", value: int(users), sub: "vs prior period", delta: dUsers },
     {
       label: "Sessions",
       value: int(sessions),
       sub: users ? `${num(sessions / users, 1)} per user` : undefined,
+      delta: dSessions,
     },
   ];
 

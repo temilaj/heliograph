@@ -2,6 +2,7 @@
 export { Card, CardHeader } from "./Card.tsx";
 export { Section, Grid } from "./Section.tsx";
 export { StatHeroGrid, StatStrip, type StatItem } from "./Stat.tsx";
+export { Delta, toDelta, type DeltaSpec } from "./Delta.tsx";
 export { BarList, type BarRow } from "./BarList.tsx";
 export { DataTable, type Column } from "./Table.tsx";
 export { PageHeader } from "./PageHeader.tsx";

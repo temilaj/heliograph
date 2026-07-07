@@ -209,7 +209,8 @@ export interface ReliabilitySummary {
 }
 
 // --- agents list (Phase 8). Full subagent table, richer than the overview
-// BarList. Keyed on the real CC agent.name attribute; empty until subagent
+// BarList. Sourced from event_type='subagent' events (dims['agent_type'] +
+// numbers['total_tokens','total_tool_uses','duration_ms']); empty until subagent
 // telemetry (gated behind OTEL_LOG_TOOL_DETAILS=1) accrues. ---
 export interface AgentsListRow {
   agentType: string;
@@ -217,6 +218,7 @@ export interface AgentsListRow {
   tokens: number;
   toolUses: number;
   users: number;
+  avgDurationMs: number;
 }
 
 export interface PluginDetail {
@@ -233,6 +235,36 @@ export interface PluginDetail {
 export interface EnvironmentSummary {
   versions: { version: string; users: number; sessions: number }[];
   entrypoints: { entrypoint: string; users: number; sessions: number }[];
+}
+
+// --- cache economics (story track). Reads api_request events' token/cost numbers.
+// cacheHitRatio = cache_read / (cache_read + cache_creation + input) — the share of
+// prompt tokens served from cache. estimatedSavingsTokenEq is an ESTIMATE (see impl),
+// not a billed figure. ---
+export interface EfficiencySummary {
+  cacheRead: number;
+  cacheCreation: number;
+  input: number;
+  output: number;
+  cacheHitRatio: number;
+  estimatedSavingsTokenEq: number;
+  totalCost: number;
+}
+
+// --- governance (story track). Approval autonomy (how tools get greenlit) +
+// friction leaderboard (which tools users reject/block most). ---
+export interface GovernanceSummary {
+  byDecisionSource: { source: string; count: number }[]; // config / user_temporary / user_permanent / …
+  friction: { tool: string; total: number; rejects: number; blocks: number; frictionRate: number }[];
+}
+
+// --- engagement (story track). Session length + prompt/response verbosity, from
+// event timestamps and assistant_response / user_prompt length numbers. Durations
+// in seconds; lengths in whatever unit CC reports (chars). ---
+export interface EngagementSummary {
+  sessionDuration: { avgSeconds: number; p50Seconds: number; p95Seconds: number; sessions: number };
+  responseLength: { avg: number; p50: number; p95: number };
+  promptLength: { avg: number };
 }
 
 export interface QueryRepository {
@@ -267,6 +299,12 @@ export interface QueryRepository {
   agentsList(r: DateRange): Promise<AgentsListRow[]>;
   /** Claude Code version + entrypoint adoption (app_version / entrypoint columns). */
   environment(r: DateRange): Promise<EnvironmentSummary>;
+  /** Cache economics: cache-hit ratio + estimated savings from api_request tokens. */
+  efficiency(r: DateRange): Promise<EfficiencySummary>;
+  /** Approval autonomy (by decision source) + per-tool reject/block friction leaderboard. */
+  governance(r: DateRange): Promise<GovernanceSummary>;
+  /** Engagement: session duration + prompt/response length distributions. */
+  engagement(r: DateRange): Promise<EngagementSummary>;
 }
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -691,35 +729,26 @@ export class ClickHouseQueryRepository implements QueryRepository {
   }
 
   async agentDetail(r: DateRange, agentType: string): Promise<AgentDetail> {
-    // agentType is the real CC agent.name attribute, bound ({a:String}) into the map
-    // lookup — never interpolated. It's dims['agent.name'] on events, attributes['agent.name']
-    // (unpromoted) on token.usage metrics.
+    // Real CC subagent telemetry: event_type='subagent', dims['agent_type'] bound
+    // ({a:String}) into the map lookup — never interpolated. Tokens live on the event
+    // (numbers['total_tokens']), so no metric merge is needed.
     const p = { org: r.org, from: r.from, to: r.to, a: agentType };
-    const eventsWhere =
-      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND dims['agent.name'] = {a:String}";
-    const metricsWhere =
-      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND name = 'token.usage' AND attributes['agent.name'] = {a:String}";
-    const [usesByDay, tokensByDay, topUsers] = await Promise.all([
-      this.ch.query<{ day: string; uses: number }>(
-        `SELECT toString(event_date) AS day, count() AS uses
-         FROM hg_events FINAL WHERE ${eventsWhere} GROUP BY event_date ORDER BY event_date`,
-        p,
-      ),
-      // Tokens per day from the token.usage metric; merge into event days by day in TS.
-      this.ch.query<{ day: string; v: number }>(
-        `SELECT toString(event_date) AS day, sum(value) AS v
-         FROM hg_metrics FINAL WHERE ${metricsWhere} GROUP BY event_date ORDER BY event_date`,
+    const where =
+      "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date} AND event_type = 'subagent' AND dims['agent_type'] = {a:String}";
+    const [usesByDay, topUsers] = await Promise.all([
+      this.ch.query<{ day: string; uses: number; tokens: number }>(
+        `SELECT toString(event_date) AS day, count() AS uses, sum(numbers['total_tokens']) AS tokens
+         FROM hg_events FINAL WHERE ${where} GROUP BY event_date ORDER BY event_date`,
         p,
       ),
       this.ch.query<{ k: string; uses: number }>(
         `SELECT user_hash AS k, count() AS uses FROM hg_events FINAL
-         WHERE ${eventsWhere} GROUP BY k ORDER BY uses DESC LIMIT 10`,
+         WHERE ${where} GROUP BY k ORDER BY uses DESC LIMIT 10`,
         p,
       ),
     ]);
-    const tok = new Map(tokensByDay.map((x) => [x.day, num(x.v)]));
     return {
-      usesByDay: usesByDay.map((x) => ({ day: x.day, uses: num(x.uses), tokens: tok.get(x.day) ?? 0 })),
+      usesByDay: usesByDay.map((x) => ({ day: x.day, uses: num(x.uses), tokens: num(x.tokens) })),
       topUsers: topUsers.map((x) => ({ userHash: x.k, uses: num(x.uses) })),
     };
   }
@@ -1168,30 +1197,34 @@ export class ClickHouseQueryRepository implements QueryRepository {
   async agentsList(r: DateRange): Promise<AgentsListRow[]> {
     const p = { org: r.org, from: r.from, to: r.to };
     const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
-    // Real CC attributes subagents via agent.name: uses/users from events (dims['agent.name']),
-    // tokens from the token.usage metric (attributes['agent.name'], unpromoted). Merge by agent.name.
-    const [eventRows, tokenRows] = await Promise.all([
-      this.ch.query<{ agentType: string; uses: number; users: number }>(
-        `SELECT dims['agent.name'] AS agentType, count() AS uses, uniqExact(user_hash) AS users
-         FROM hg_events FINAL
-         WHERE ${where} AND dims['agent.name'] != ''
-         GROUP BY agentType ORDER BY uses DESC LIMIT 200`,
-        p,
-      ),
-      this.ch.query<{ agentType: string; tokens: number }>(
-        `SELECT attributes['agent.name'] AS agentType, sum(value) AS tokens FROM hg_metrics FINAL
-         WHERE ${where} AND name = 'token.usage' AND attributes['agent.name'] != '' GROUP BY agentType`,
-        p,
-      ),
-    ]);
-    const tok = new Map(tokenRows.map((t) => [t.agentType, num(t.tokens)]));
-    return eventRows.map((x) => ({
+    // Real CC subagent telemetry: event_type='subagent' carries the whole row —
+    // dims['agent_type'] + numbers['total_tokens','total_tool_uses','duration_ms'].
+    // Single self-contained aggregate (no metric merge needed).
+    const rows = await this.ch.query<{
+      agentType: string;
+      uses: number;
+      tokens: number;
+      toolUses: number;
+      users: number;
+      avgDurationMs: number;
+    }>(
+      `SELECT dims['agent_type'] AS agentType, count() AS uses,
+              sum(numbers['total_tokens']) AS tokens,
+              sum(numbers['total_tool_uses']) AS toolUses,
+              uniqExact(user_hash) AS users,
+              avgIf(numbers['duration_ms'], mapContains(numbers, 'duration_ms')) AS avgDurationMs
+       FROM hg_events FINAL
+       WHERE ${where} AND event_type = 'subagent' AND dims['agent_type'] != ''
+       GROUP BY agentType ORDER BY uses DESC LIMIT 200`,
+      p,
+    );
+    return rows.map((x) => ({
       agentType: x.agentType,
       uses: num(x.uses),
-      tokens: tok.get(x.agentType) ?? 0,
-      // No real CC source: toolUses came from loadgen's total_tool_uses. 0 until CC exposes it.
-      toolUses: 0,
+      tokens: num(x.tokens),
+      toolUses: num(x.toolUses),
       users: num(x.users),
+      avgDurationMs: num(x.avgDurationMs),
     }));
   }
 
@@ -1217,6 +1250,125 @@ export class ClickHouseQueryRepository implements QueryRepository {
     return {
       versions: versions.map((x) => ({ version: x.k || "(unknown)", users: num(x.users), sessions: num(x.sessions) })),
       entrypoints: entrypoints.map((x) => ({ entrypoint: x.k || "(unknown)", users: num(x.users), sessions: num(x.sessions) })),
+    };
+  }
+
+  async efficiency(r: DateRange): Promise<EfficiencySummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    // api_request events carry the token/cost numbers. Single aggregate; ratios in TS.
+    const rows = await this.ch.query<{
+      cacheRead: number;
+      cacheCreation: number;
+      input: number;
+      output: number;
+      totalCost: number;
+    }>(
+      `SELECT sum(numbers['cache_read_tokens']) AS cacheRead,
+              sum(numbers['cache_creation_tokens']) AS cacheCreation,
+              sum(numbers['input_tokens']) AS input,
+              sum(numbers['output_tokens']) AS output,
+              sum(numbers['cost_usd']) AS totalCost
+       FROM hg_events FINAL WHERE ${where} AND event_type = 'api_request'`,
+      p,
+    );
+    const cacheRead = num(rows[0]?.cacheRead);
+    const cacheCreation = num(rows[0]?.cacheCreation);
+    const input = num(rows[0]?.input);
+    const output = num(rows[0]?.output);
+    // Share of prompt tokens served from cache (excludes output — that's generated, never cached).
+    const promptBase = cacheRead + cacheCreation + input;
+    const cacheHitRatio = promptBase > 0 ? cacheRead / promptBase : 0;
+    // ESTIMATE, not billed truth: cache reads bill at ~0.1x the input rate, so each
+    // cache-read token saves ~0.9 input-token-equivalents vs. sending it uncached.
+    const estimatedSavingsTokenEq = cacheRead * 0.9;
+    return {
+      cacheRead,
+      cacheCreation,
+      input,
+      output,
+      cacheHitRatio,
+      estimatedSavingsTokenEq,
+      totalCost: num(rows[0]?.totalCost),
+    };
+  }
+
+  async governance(r: DateRange): Promise<GovernanceSummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    const [bySource, friction] = await Promise.all([
+      // How autonomously tools run: decision_source distribution on tool_result.
+      this.ch.query<{ source: string; count: number }>(
+        `SELECT dims['decision_source'] AS source, count() AS count
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'tool_result'
+         GROUP BY source ORDER BY count DESC`,
+        p,
+      ),
+      // Friction triage: per-tool reject+block rate from tool_decision, worst first.
+      this.ch.query<{ tool: string; total: number; rejects: number; blocks: number; frictionRate: number }>(
+        `SELECT dims['tool_name'] AS tool, count() AS total,
+                countIf(dims['decision'] = 'reject') AS rejects,
+                countIf(dims['decision'] = 'block') AS blocks,
+                (countIf(dims['decision'] = 'reject') + countIf(dims['decision'] = 'block')) / count() AS frictionRate
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'tool_decision' AND dims['tool_name'] != ''
+         GROUP BY tool ORDER BY frictionRate DESC LIMIT 20`,
+        p,
+      ),
+    ]);
+    return {
+      byDecisionSource: bySource.map((x) => ({ source: x.source || "(unknown)", count: num(x.count) })),
+      friction: friction.map((x) => ({
+        tool: x.tool || "(unknown)",
+        total: num(x.total),
+        rejects: num(x.rejects),
+        blocks: num(x.blocks),
+        frictionRate: num(x.frictionRate),
+      })),
+    };
+  }
+
+  async engagement(r: DateRange): Promise<EngagementSummary> {
+    const p = { org: r.org, from: r.from, to: r.to };
+    const where = "org_id = {org:String} AND event_date BETWEEN {from:Date} AND {to:Date}";
+    const [sessionDuration, responseLength, promptLength] = await Promise.all([
+      // Session length = span between first/last event per session_id; then aggregate the spans.
+      this.ch.query<{ avgSeconds: number; p50Seconds: number; p95Seconds: number; sessions: number }>(
+        `SELECT avg(dur) AS avgSeconds, quantile(0.5)(dur) AS p50Seconds,
+                quantile(0.95)(dur) AS p95Seconds, count() AS sessions
+         FROM (
+           SELECT session_id, dateDiff('second', min(timestamp), max(timestamp)) AS dur
+           FROM hg_events FINAL WHERE ${where} AND session_id != '' GROUP BY session_id
+         )`,
+        p,
+      ),
+      this.ch.query<{ avg: number; p50: number; p95: number }>(
+        `SELECT avg(numbers['response_length']) AS avg,
+                quantile(0.5)(numbers['response_length']) AS p50,
+                quantile(0.95)(numbers['response_length']) AS p95
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'assistant_response'
+           AND mapContains(numbers, 'response_length')`,
+        p,
+      ),
+      this.ch.query<{ avg: number }>(
+        `SELECT avg(numbers['prompt_length']) AS avg
+         FROM hg_events FINAL WHERE ${where} AND event_type = 'user_prompt'
+           AND mapContains(numbers, 'prompt_length')`,
+        p,
+      ),
+    ]);
+    return {
+      sessionDuration: {
+        avgSeconds: num(sessionDuration[0]?.avgSeconds),
+        p50Seconds: num(sessionDuration[0]?.p50Seconds),
+        p95Seconds: num(sessionDuration[0]?.p95Seconds),
+        sessions: num(sessionDuration[0]?.sessions),
+      },
+      responseLength: {
+        avg: num(responseLength[0]?.avg),
+        p50: num(responseLength[0]?.p50),
+        p95: num(responseLength[0]?.p95),
+      },
+      promptLength: { avg: num(promptLength[0]?.avg) },
     };
   }
 }
@@ -1320,5 +1472,26 @@ export class InMemoryQueryRepository implements QueryRepository {
   }
   async environment(): Promise<EnvironmentSummary> {
     return { versions: [], entrypoints: [] };
+  }
+  async efficiency(): Promise<EfficiencySummary> {
+    return {
+      cacheRead: 0,
+      cacheCreation: 0,
+      input: 0,
+      output: 0,
+      cacheHitRatio: 0,
+      estimatedSavingsTokenEq: 0,
+      totalCost: 0,
+    };
+  }
+  async governance(): Promise<GovernanceSummary> {
+    return { byDecisionSource: [], friction: [] };
+  }
+  async engagement(): Promise<EngagementSummary> {
+    return {
+      sessionDuration: { avgSeconds: 0, p50Seconds: 0, p95Seconds: 0, sessions: 0 },
+      responseLength: { avg: 0, p50: 0, p95: 0 },
+      promptLength: { avg: 0 },
+    };
   }
 }

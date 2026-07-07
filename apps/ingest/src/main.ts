@@ -8,8 +8,9 @@ import { AdapterRegistry, ClaudeCodeAdapter } from "@heliograph/adapters";
 import { OtlpDecodeError } from "@heliograph/otlp";
 
 import { Enricher, createIdentityHasher } from "@heliograph/enrichment";
+import { createRedactionPipeline, orgPolicyStoreFromEnv } from "@heliograph/redaction";
 import { makeQueueProvider } from "@heliograph/queue";
-import { kafkaEnv, identityPepper, queueProviderName } from "@heliograph/config";
+import { kafkaEnv, identityPepper, queueProviderName, contentMasterKey } from "@heliograph/config";
 import { MetricsIngestPipeline, SaturatedError, type IngestResult } from "./pipeline.ts";
 import { EventsIngestPipeline } from "./events-pipeline.ts";
 import { startOtlpGrpcServer, type OtlpGrpcHandle } from "./grpc.ts";
@@ -26,6 +27,8 @@ const queue = makeQueueProvider({
 const registry = new AdapterRegistry().register(new ClaudeCodeAdapter());
 const hash = createIdentityHasher(identityPepper());
 const enricher = new Enricher();
+const redactor = createRedactionPipeline(contentMasterKey());
+const policyStore = orgPolicyStoreFromEnv();
 
 const metricsPipeline = new MetricsIngestPipeline({
   registry,
@@ -38,6 +41,8 @@ const eventsPipeline = new EventsIngestPipeline({
   registry,
   hash,
   enricher,
+  redactor,
+  policyStore,
   publisher: queue.publisher(),
   eventsTopic: kafka.topics.events,
 });
@@ -75,30 +80,37 @@ const server = Bun.serve({
 
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/v1/metrics") {
-      return handleOtlp(req, (b) => metricsPipeline.ingestJson(b), "metrics");
+      return handleOtlp(req, metricsPipeline, "metrics");
     }
     if (req.method === "POST" && url.pathname === "/v1/logs") {
-      return handleOtlp(req, (b) => eventsPipeline.ingestJson(b), "events");
+      return handleOtlp(req, eventsPipeline, "events");
     }
     return new Response("not found", { status: 404 });
   },
 });
 
-async function handleOtlp(
-  req: Request,
-  ingest: (body: unknown) => Promise<IngestResult>,
-  label: string,
-): Promise<Response> {
+// Both pipelines expose these; HTTP accepts OTLP/JSON and OTLP/protobuf.
+interface OtlpIngester {
+  ingestJson(body: unknown): Promise<IngestResult>;
+  ingestProto(bytes: Uint8Array): Promise<IngestResult>;
+}
+
+async function handleOtlp(req: Request, ingester: OtlpIngester, label: string): Promise<Response> {
   const ct = req.headers.get("content-type") ?? "";
-  // HTTP path is OTLP/JSON only; protobuf/gRPC clients use :4317.
-  if (!ct.includes("application/json")) {
-    return json(415, { message: "only application/json (OTLP/JSON) supported" });
+  const isProto = ct.includes("application/x-protobuf");
+  if (!isProto && !ct.includes("application/json")) {
+    return json(415, { message: "content-type must be application/json or application/x-protobuf" });
   }
   try {
     if (queueNotReady()) return json(503, { message: "not ready" });
-    const result = await ingest(await req.json());
-    log.info(`${label} ingested`, { accepted: result.accepted });
-    return json(200, { partialSuccess: {} });
+    const result = isProto
+      ? await ingester.ingestProto(new Uint8Array(await req.arrayBuffer()))
+      : await ingester.ingestJson(await req.json());
+    log.info(`${label} ingested`, { accepted: result.accepted, proto: isProto });
+    // Empty response message = success; echo the request's content-type.
+    return isProto
+      ? new Response(new Uint8Array(0), { status: 200, headers: { "content-type": "application/x-protobuf" } })
+      : json(200, { partialSuccess: {} });
   } catch (err) {
     if (err instanceof SaturatedError) return json(429, { message: "saturated" });
     // Malformed payload (bad JSON or OTLP shape) is a client fault, not retryable.

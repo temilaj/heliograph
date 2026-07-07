@@ -17,6 +17,9 @@ import type {
   ReliabilitySummary,
   AgentsListRow,
   EnvironmentSummary,
+  EfficiencySummary,
+  GovernanceSummary,
+  EngagementSummary,
 } from "@heliograph/storage";
 
 async function get<T>(path: string): Promise<T> {
@@ -140,4 +143,28 @@ export function fetchAgentDetail(
   agentType: string,
 ): Promise<AgentDetail> {
   return get<AgentDetail>(`/v1/agents/${encodeURIComponent(agentType)}?${range(org, from, to)}`);
+}
+
+export function fetchEfficiency(
+  org: string,
+  from: string,
+  to: string,
+): Promise<EfficiencySummary> {
+  return get<EfficiencySummary>(`/v1/efficiency?${range(org, from, to)}`);
+}
+
+export function fetchGovernance(
+  org: string,
+  from: string,
+  to: string,
+): Promise<GovernanceSummary> {
+  return get<GovernanceSummary>(`/v1/governance?${range(org, from, to)}`);
+}
+
+export function fetchEngagement(
+  org: string,
+  from: string,
+  to: string,
+): Promise<EngagementSummary> {
+  return get<EngagementSummary>(`/v1/engagement?${range(org, from, to)}`);
 }

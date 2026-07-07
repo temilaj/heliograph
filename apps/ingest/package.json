@@ -13,6 +13,7 @@
     "@heliograph/adapters": "workspace:*",
     "@heliograph/enrichment": "workspace:*",
     "@heliograph/queue": "workspace:*",
+    "@heliograph/redaction": "workspace:*",
     "@heliograph/config": "workspace:*"
   }
 }

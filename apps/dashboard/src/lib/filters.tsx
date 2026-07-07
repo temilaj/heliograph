@@ -19,6 +19,16 @@ export function daysAgo(n: number): string {
   return ymd(new Date(Date.now() - n * 86_400_000));
 }
 
+/** The equal-length window immediately before [from,to] — for period-over-period
+ *  deltas. Inclusive YYYY-MM-DD dates. */
+export function priorRange(from: string, to: string): { from: string; to: string } {
+  const day = 86_400_000;
+  const f = new Date(from + "T00:00:00Z").getTime();
+  const t = new Date(to + "T00:00:00Z").getTime();
+  const len = t - f + day; // inclusive span
+  return { from: ymd(new Date(f - len)), to: ymd(new Date(f - day)) };
+}
+
 export function useFilters(): Filters {
   const [params, setParams] = useSearchParams();
   const org = params.get("org") ?? "";

@@ -1,6 +1,6 @@
 // Metrics pipeline (layers 2-5): decode -> adapt -> enrich -> produce. Transport-free
 // so it's unit-testable and reusable by the gRPC receiver in Phase 2.
-import { decodeMetricsJson } from "@heliograph/otlp";
+import { decodeMetricsJson, decodeMetricsProto, type DecodedMetrics } from "@heliograph/otlp";
 import type { AdapterContext, AdapterRegistry } from "@heliograph/adapters";
 import type { Enricher, HashFn } from "@heliograph/enrichment";
 import type { CanonicalMetric } from "@heliograph/domain";
@@ -28,10 +28,18 @@ export class MetricsIngestPipeline {
   constructor(private readonly deps: PipelineDeps) {}
 
   /** Ingest one OTLP/JSON request. Throws SaturatedError for backpressure (HTTP 429). */
-  async ingestJson(body: unknown): Promise<IngestResult> {
+  ingestJson(body: unknown): Promise<IngestResult> {
+    return this.process(decodeMetricsJson(body));
+  }
+
+  /** Ingest one OTLP/protobuf request (same pipeline as JSON). */
+  ingestProto(bytes: Uint8Array): Promise<IngestResult> {
+    return this.process(decodeMetricsProto(bytes));
+  }
+
+  private async process(decoded: DecodedMetrics): Promise<IngestResult> {
     if (this.deps.publisher.isSaturated()) throw new SaturatedError();
 
-    const decoded = decodeMetricsJson(body);
     const ctx: AdapterContext = { hash: this.deps.hash };
     const metrics: CanonicalMetric[] = [];
 
